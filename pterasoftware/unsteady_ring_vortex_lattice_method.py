@@ -68,6 +68,7 @@ class UnsteadyRingVortexLatticeMethodSolver:
         self._first_averaging_step = self.unsteady_problem.first_averaging_step
         self._current_step: int = 0
         self._prescribed_wake: bool = True
+        self._force_method: str = "joukowski"
 
         self.steady_problems = self.unsteady_problem.steady_problems
 
@@ -138,6 +139,14 @@ class UnsteadyRingVortexLatticeMethodSolver:
         self.stackLbrv_GP1: np.ndarray = np.empty(0, dtype=float)
         self.stackBbrv_GP1: np.ndarray = np.empty(0, dtype=float)
 
+        # Katz method specific arrays for pressure calculation.
+        self._panel_chord_lengths: np.ndarray = np.empty(0, dtype=float)
+        self._panel_span_lengths: np.ndarray = np.empty(0, dtype=float)
+        self._stackChordwiseTangent_GP1: np.ndarray = np.empty(0, dtype=float)
+        self._stackSpanwiseTangent_GP1: np.ndarray = np.empty(0, dtype=float)
+        self._stackCentroid_GP1_CgP1: np.ndarray = np.empty(0, dtype=float)
+        self._stackLastCentroid_GP1_CgP1: np.ndarray = np.empty(0, dtype=float)
+
         # Initialize variables to hold aerodynamic data that pertains details about
         # each Panel's location on its Wing.
         self.panel_is_trailing_edge: np.ndarray = np.empty(0, dtype=bool)
@@ -180,6 +189,7 @@ class UnsteadyRingVortexLatticeMethodSolver:
         prescribed_wake: bool | np.bool_ = True,
         calculate_streamlines: bool | np.bool_ = True,
         show_progress: bool | np.bool_ = True,
+        force_method: str = "joukowski",
     ) -> None:
         """Runs the solver on the UnsteadyProblem.
 
@@ -195,6 +205,11 @@ class UnsteadyRingVortexLatticeMethodSolver:
             showing the progress bar and displaying log statements, set up logging using
             the setup_logging function. It can be a bool or a numpy bool and will be
             converted internally to a bool. The default is True.
+        :param force_method: The method to use for calculating aerodynamic forces. Valid
+            options are "joukowski" which uses the Kutta Joukowski theorem on each
+            RingVortex leg, and "katz" which uses the pressure integration method from
+            "Low Speed Aerodynamics" by Katz and Plotkin (Section 13.12, Eq. 13.150 and
+            13.151). The default is "joukowski".
         :return: None
         """
         self._prescribed_wake = _parameter_validation.boolLike_return_bool(
@@ -206,6 +221,14 @@ class UnsteadyRingVortexLatticeMethodSolver:
         show_progress = _parameter_validation.boolLike_return_bool(
             show_progress, "show_progress"
         )
+        force_method = _parameter_validation.str_return_str(
+            force_method, "force_method"
+        )
+        if force_method not in ("joukowski", "katz"):
+            raise ValueError(
+                f"force_method must be 'joukowski' or 'katz', got '{force_method}'."
+            )
+        self._force_method = force_method
 
         # The following loop iterates through the time steps to populate currently
         # empty attributes with lists of pre-allocated arrays. During the simulation,
@@ -411,6 +434,22 @@ class UnsteadyRingVortexLatticeMethodSolver:
                 self.stackLbrv_GP1 = np.zeros((self.num_panels, 3), dtype=float)
                 self.stackBbrv_GP1 = np.zeros((self.num_panels, 3), dtype=float)
 
+                # Initialize the Katz method specific arrays.
+                self._panel_chord_lengths = np.zeros(self.num_panels, dtype=float)
+                self._panel_span_lengths = np.zeros(self.num_panels, dtype=float)
+                self._stackChordwiseTangent_GP1 = np.zeros(
+                    (self.num_panels, 3), dtype=float
+                )
+                self._stackSpanwiseTangent_GP1 = np.zeros(
+                    (self.num_panels, 3), dtype=float
+                )
+                self._stackCentroid_GP1_CgP1 = np.zeros(
+                    (self.num_panels, 3), dtype=float
+                )
+                self._stackLastCentroid_GP1_CgP1 = np.zeros(
+                    (self.num_panels, 3), dtype=float
+                )
+
                 # Initialize variables to hold details about each Panel's location on
                 # its Wing.
                 self.panel_is_trailing_edge = np.zeros(self.num_panels, dtype=bool)
@@ -434,6 +473,10 @@ class UnsteadyRingVortexLatticeMethodSolver:
                 # Collapse the geometry matrices into 1D ndarrays of attributes.
                 _logger.debug("Collapsing the geometry.")
                 self._collapse_geometry()
+
+                # Collapse the Katz method specific geometry data if needed.
+                if self._force_method == "katz":
+                    self._collapse_geometry_katz_data()
 
                 # Find the matrix of Wing Wing influence coefficients associated with
                 # the Airplanes' geometries at this time step.
@@ -807,6 +850,112 @@ class UnsteadyRingVortexLatticeMethodSolver:
                         # Increment the global Panel position variable.
                         global_panel_position += 1
 
+    def _collapse_geometry_katz_data(self) -> None:
+        """Populates the Katz method specific ndarrays.
+
+        :return: None
+        """
+        global_panel_position = 0
+
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                _panels = wing.panels
+                assert _panels is not None
+
+                panels = np.ravel(_panels)
+
+                panel: _panel.Panel
+                for panel in panels:
+                    # Get the leg vectors, in the first Airplane's geometry axes.
+                    _rightLeg_GP1 = panel.rightLeg_GP1
+                    _frontLeg_GP1 = panel.frontLeg_GP1
+                    _leftLeg_GP1 = panel.leftLeg_GP1
+                    _backLeg_GP1 = panel.backLeg_GP1
+                    assert _rightLeg_GP1 is not None
+                    assert _frontLeg_GP1 is not None
+                    assert _leftLeg_GP1 is not None
+                    assert _backLeg_GP1 is not None
+
+                    # Compute the chordwise tangent vector (the average of right and left
+                    # leg vectors, normalized), in the first Airplane's geometry axes.
+                    chordwise_GP1 = (_rightLeg_GP1 - _leftLeg_GP1) / 2
+                    chordwise_length = float(np.linalg.norm(chordwise_GP1))
+                    if chordwise_length > 0:
+                        self._stackChordwiseTangent_GP1[global_panel_position, :] = (
+                            chordwise_GP1 / chordwise_length
+                        )
+                    self._panel_chord_lengths[global_panel_position] = chordwise_length
+
+                    # Compute the spanwise tangent vector (the average of front and back
+                    # leg vectors, normalized), in the first Airplane's geometry axes.
+                    spanwise_GP1 = (_frontLeg_GP1 - _backLeg_GP1) / 2
+                    spanwise_length = float(np.linalg.norm(spanwise_GP1))
+                    if spanwise_length > 0:
+                        self._stackSpanwiseTangent_GP1[global_panel_position, :] = (
+                            spanwise_GP1 / spanwise_length
+                        )
+                    self._panel_span_lengths[global_panel_position] = spanwise_length
+
+                    # Get the locations of the Panel points, in the first Airplane's
+                    # geometry axes, with respect to the first Airplane's CG.
+                    _Frpp = panel.Frpp_GP1_CgP1
+                    _Flpp = panel.Flpp_GP1_CgP1
+                    _Blpp = panel.Blpp_GP1_CgP1
+                    _Brpp = panel.Brpp_GP1_CgP1
+                    assert _Frpp is not None
+                    assert _Flpp is not None
+                    assert _Blpp is not None
+                    assert _Brpp is not None
+
+                    # Compute the location of the centroid (the average of the locations
+                    # of the four Panel points), in the first Airplane's geometry axes,
+                    # with respect to the first Airplane's CG.
+                    self._stackCentroid_GP1_CgP1[global_panel_position, :] = (
+                        _Frpp + _Flpp + _Blpp + _Brpp
+                    ) / 4
+
+                    global_panel_position += 1
+
+        # Populate last centroid positions, in the first Airplane's geometry axes, with
+        # respect to the first Airplane's CG, if not the first time step.
+        if self._current_step > 0:
+            self._populate_last_centroid_positions()
+
+    def _populate_last_centroid_positions(self) -> None:
+        """Populates the centroid positions from the previous time step, in the first
+        Airplane's geometry axes, with respect to the first Airplane's CG.
+
+        :return: None
+        """
+        global_panel_position = 0
+
+        last_problem = self.steady_problems[self._current_step - 1]
+        last_airplanes = last_problem.airplanes
+
+        for last_airplane in last_airplanes:
+            for last_wing in last_airplane.wings:
+                _last_panels = last_wing.panels
+                assert _last_panels is not None
+
+                last_panels = np.ravel(_last_panels)
+
+                last_panel: _panel.Panel
+                for last_panel in last_panels:
+                    _Frpp = last_panel.Frpp_GP1_CgP1
+                    _Flpp = last_panel.Flpp_GP1_CgP1
+                    _Blpp = last_panel.Blpp_GP1_CgP1
+                    _Brpp = last_panel.Brpp_GP1_CgP1
+                    assert _Frpp is not None
+                    assert _Flpp is not None
+                    assert _Blpp is not None
+                    assert _Brpp is not None
+
+                    self._stackLastCentroid_GP1_CgP1[global_panel_position, :] = (
+                        _Frpp + _Flpp + _Blpp + _Brpp
+                    ) / 4
+
+                    global_panel_position += 1
+
     def _calculate_wing_wing_influences(self) -> None:
         """Finds the current time step's SteadyProblem's 2D ndarray of Wing Wing
         influence coefficients (observed from the Earth frame).
@@ -1016,16 +1165,29 @@ class UnsteadyRingVortexLatticeMethodSolver:
         )
 
     def _calculate_loads(self) -> None:
-        """Calculates the forces (in the first Airplane's geometry axes) and moments (in
+        """Dispatches to the appropriate load calculation method.
+
+        :return: None
+        """
+        if self._force_method == "joukowski":
+            self._calculate_loads_joukowski()
+        else:
+            self._calculate_loads_katz()
+
+    def _calculate_loads_joukowski(self) -> None:
+        """Calculates forces using the Kutta Joukowski theorem.
+
+        Calculates the forces (in the first Airplane's geometry axes) and moments (in
         the first Airplane's geometry axes, relative to the first Airplane's CG) on
-        every Panel at the current time step.
+        every Panel at the current time step using the Kutta Joukowski theorem applied
+        to each RingVortex leg.
 
         **Notes:**
 
         This method assumes that the correct strengths for the RingVortices and
         HorseshoeVortices have already been calculated and set.
 
-        This method used to accidentally double-count the load on each Panel due to the
+        This method used to accidentally double count the load on each Panel due to the
         left and right LineVortex legs. Additionally, it didn't include contributions to
         the load on each Panel from their back LineVortex legs. Thankfully, these issues
         only introduced small errors in most typical simulations. They have both now
@@ -1310,6 +1472,225 @@ class UnsteadyRingVortexLatticeMethodSolver:
         # TODO: Transform forces_GP1 and moments_GP1_CgP1 to each Airplane's local
         #  geometry axes before passing to process_solver_loads.
         _functions.process_solver_loads(self, forces_GP1, moments_GP1_CgP1)
+
+    def _calculate_loads_katz(self) -> None:
+        """Calculates forces using the Katz pressure integration method.
+
+        Implements the force calculation from Katz and Plotkin Section 13.12 (Eq. 13.150
+        and 13.151). The pressure difference across each Panel is computed from
+        circulation gradients in the chordwise and spanwise directions, plus the
+        unsteady term from the time derivative of circulation.
+
+        :return: None
+        """
+        # Calculate circulation gradients.
+        chordwise_circulation_gradients = (
+            self._calculate_chordwise_circulation_gradients()
+        )
+        spanwise_circulation_gradients = (
+            self._calculate_spanwise_circulation_gradients()
+        )
+
+        # Calculate velocity at Panel centroids.
+        stackVelocityCentroid_GP1__E = (
+            self.calculate_solution_velocity(
+                stackP_GP1_CgP1=self._stackCentroid_GP1_CgP1
+            )
+            + self._calculate_current_movement_velocities_at_centroids()
+        )
+
+        # Chordwise velocity component (V dot tau_i).
+        chordwise_velocity_component = np.einsum(
+            "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackChordwiseTangent_GP1
+        )
+
+        # Spanwise velocity component (V dot tau_j).
+        spanwise_velocity_component = np.einsum(
+            "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackSpanwiseTangent_GP1
+        )
+
+        # Time derivative of circulation.
+        d_gamma_dt = (
+            self._current_bound_vortex_strengths - self._last_bound_vortex_strengths
+        ) / self.delta_time
+
+        # Pressure difference (guard against division by zero).
+        chord_term = np.zeros(self.num_panels, dtype=float)
+        span_term = np.zeros(self.num_panels, dtype=float)
+
+        nonzero_chord = self._panel_chord_lengths > 0
+        nonzero_span = self._panel_span_lengths > 0
+
+        chord_term[nonzero_chord] = (
+            chordwise_velocity_component[nonzero_chord]
+            * chordwise_circulation_gradients[nonzero_chord]
+            / self._panel_chord_lengths[nonzero_chord]
+        )
+
+        span_term[nonzero_span] = (
+            spanwise_velocity_component[nonzero_span]
+            * spanwise_circulation_gradients[nonzero_span]
+            / self._panel_span_lengths[nonzero_span]
+        )
+
+        # Calculate the pressure difference across each Panel using Katz and Plotkin
+        # Eq. 13.150. The equation is: delta_p = rho * (V.tau_i * dGamma/dx +
+        # V.tau_j * dGamma/dy + dGamma/dt). However, the unsteady term (dGamma/dt)
+        # is subtracted here instead of added to account for a sign convention
+        # mismatch between Ptera Software and the reference literature. Ptera
+        # Software defines RingVortices with counter-clockwise (CCW) vertex ordering,
+        # while Katz and Plotkin use clockwise (CW) ordering. This affects the unsteady
+        # term because pressure acts in the direction of the panel normal, and the
+        # time derivative of circulation has the opposite sign under CCW vs. CW
+        # conventions. See the similar correction in _calculate_loads_joukowski()
+        # and issue #27: https://github.com/camUrban/PteraSoftware/issues/27
+        delta_p = self.current_operating_point.rho * (
+            chord_term + span_term - d_gamma_dt
+        )
+
+        # Force on each Panel: F = delta_p x S x n_hat.
+        # The pressure difference delta_p is defined as p_lower - p_upper, and the
+        # normal vector points upward, so positive delta_p produces upward force.
+        forces_GP1 = (
+            np.expand_dims(delta_p, axis=1)
+            * np.expand_dims(self.panel_areas, axis=1)
+            * self.stackUnitNormals_GP1
+        )
+
+        # Moments (in the first Airplanes geometry axes, with respect to the first
+        # Airplane's CG) from forces applied at the centroids of each Panel.
+        moments_GP1_CgP1 = _functions.numba_1d_explicit_cross(
+            self._stackCentroid_GP1_CgP1, forces_GP1
+        )
+
+        _functions.process_solver_loads(self, forces_GP1, moments_GP1_CgP1)
+
+    def _calculate_chordwise_circulation_gradients(self) -> np.ndarray:
+        """Calculates the chordwise circulation gradient for each Panel.
+
+        The chordwise gradient is (Gamma_ij - Gamma_i-1,j), where i is the chordwise
+        index (from leading edge toward trailing edge).
+
+        For leading edge Panels, the gradient equals the Panel's circulation (assuming
+        zero circulation ahead of the wing).
+
+        :return: A (N,) ndarray of floats representing the chordwise circulation
+            gradient for each Panel. The units are in meters squared per second.
+        """
+        chordwise_gradients = np.zeros(self.num_panels, dtype=float)
+        global_panel_position = 0
+
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                _panels = wing.panels
+                assert _panels is not None
+
+                panels = np.ravel(_panels)
+
+                panel: _panel.Panel
+                for panel in panels:
+                    _local_chordwise_position = panel.local_chordwise_position
+                    _local_spanwise_position = panel.local_spanwise_position
+                    assert _local_chordwise_position is not None
+                    assert _local_spanwise_position is not None
+
+                    this_gamma = self._current_bound_vortex_strengths[
+                        global_panel_position
+                    ]
+
+                    if panel.is_leading_edge:
+                        chordwise_gradients[global_panel_position] = this_gamma
+                    else:
+                        panel_in_front: _panel.Panel = _panels[
+                            _local_chordwise_position - 1,
+                            _local_spanwise_position,
+                        ]
+                        ring_vortex_in_front = panel_in_front.ring_vortex
+                        assert ring_vortex_in_front is not None
+
+                        chordwise_gradients[global_panel_position] = (
+                            this_gamma - ring_vortex_in_front.strength
+                        )
+
+                    global_panel_position += 1
+
+        return chordwise_gradients
+
+    def _calculate_spanwise_circulation_gradients(self) -> np.ndarray:
+        """Calculates the spanwise circulation gradient for each Panel.
+
+        The spanwise gradient is (Gamma_ij - Gamma_i,j-1), where j is the spanwise index
+        (from left edge toward right edge).
+
+        For left edge Panels, the gradient equals the Panel's circulation (assuming zero
+        circulation to the left of the wing).
+
+        :return: A (N,) ndarray of floats representing the spanwise circulation gradient
+            for each Panel. The units are in meters squared per second.
+        """
+        spanwise_gradients = np.zeros(self.num_panels, dtype=float)
+        global_panel_position = 0
+
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                _panels = wing.panels
+                assert _panels is not None
+
+                panels = np.ravel(_panels)
+
+                panel: _panel.Panel
+                for panel in panels:
+                    _local_chordwise_position = panel.local_chordwise_position
+                    _local_spanwise_position = panel.local_spanwise_position
+                    assert _local_chordwise_position is not None
+                    assert _local_spanwise_position is not None
+
+                    this_gamma = self._current_bound_vortex_strengths[
+                        global_panel_position
+                    ]
+
+                    if panel.is_left_edge:
+                        spanwise_gradients[global_panel_position] = this_gamma
+                    else:
+                        panel_to_left: _panel.Panel = _panels[
+                            _local_chordwise_position,
+                            _local_spanwise_position - 1,
+                        ]
+                        ring_vortex_to_left = panel_to_left.ring_vortex
+                        assert ring_vortex_to_left is not None
+
+                        spanwise_gradients[global_panel_position] = (
+                            this_gamma - ring_vortex_to_left.strength
+                        )
+
+                    global_panel_position += 1
+
+        return spanwise_gradients
+
+    def _calculate_current_movement_velocities_at_centroids(self) -> np.ndarray:
+        """Finds the apparent velocities (in the first Airplane's geometry axes,
+        observed from the Earth frame) at each Panel's centroid due to any motion
+        defined in Movement at the current time step.
+
+        **Notes:**
+
+        At each point, any apparent velocity due to Movement is opposite the motion due
+        to Movement.
+
+        :return: A (M, 3) ndarray of floats representing the apparent velocity (in the
+            first Airplane's geometry axes, observed from the Earth frame) at each
+            Panel's centroid due to any motion defined in Movement. If the current time
+            step is the first time step, these velocities will all be all zeros. Its
+            units are in meters per second.
+        """
+        if self._current_step < 1:
+            return np.zeros((self.num_panels, 3), dtype=float)
+
+        return cast(
+            np.ndarray,
+            -(self._stackCentroid_GP1_CgP1 - self._stackLastCentroid_GP1_CgP1)
+            / self.delta_time,
+        )
 
     def _populate_next_airplanes_wake(self) -> None:
         """Updates the next time step's Airplanes' wakes.
