@@ -45,3 +45,4 @@ cd ${WORKSPACE} && ".venv/Scripts/python.exe" docformatter --black --in-place pt
 - Prefer comments on their own line above the code they describe.
 - Use American English spelling (e.g., "color" not "colour", "center" not "centre").
 - Write "time step" instead of "timestep", "time-step", or "step".
+- Use "and" instead of "&".
