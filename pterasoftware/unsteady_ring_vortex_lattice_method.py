@@ -1364,7 +1364,7 @@ class UnsteadyRingVortexLatticeMethodSolver:
             + self._calculate_current_movement_velocities_at_back_leg_centers()
         )
 
-        # Using the effective LineVortex strengths and the Kutta-Joukowski theorem,
+        # Using the effective LineVortex strengths and the Kutta Joukowski theorem,
         # find the forces (in the first Airplane's geometry axes) on the Panels'
         # RingVortex's right LineVortex, front LineVortex, left LineVortex, and back
         # LineVortex using the effective vortex strengths.
@@ -1401,13 +1401,13 @@ class UnsteadyRingVortexLatticeMethodSolver:
 
         # The unsteady force calculation below includes a negative sign to account for a
         # sign convention mismatch between Ptera Software and the reference literature.
-        # Ptera Software defines RingVortices with counter-clockwise (CCW) vertex
+        # Ptera Software defines RingVortices with counter clockwise (CCW) vertex
         # ordering, while the references use clockwise (CW) ordering. Both define panel
         # normals as pointing upward. This convention difference only affects the
         # unsteady force term because it depends on both vortex strength and the normal
         # vector. When converting from CCW to CW, the strength changes sign but the
         # normal vector does not, requiring a sign correction. In contrast, steady
-        # Kutta-Joukowski forces depend on the strength and the LineVortex vectors. Both
+        # Kutta Joukowski forces depend on the strength and the LineVortex vectors. Both
         # have flipped signs, causing the negatives to cancel. See issue #27:
         # https://github.com/camUrban/PteraSoftware/issues/27
 
@@ -1478,18 +1478,14 @@ class UnsteadyRingVortexLatticeMethodSolver:
 
         Implements the force calculation from Katz and Plotkin Section 13.12 (Eq. 13.150
         and 13.151). The pressure difference across each Panel is computed from
-        circulation gradients in the chordwise and spanwise directions, plus the
-        unsteady term from the time derivative of circulation.
+        vorticity gradients in the chordwise and spanwise directions, plus the unsteady
+        term from the time derivative of vorticity.
 
         :return: None
         """
-        # Calculate circulation gradients.
-        chordwise_circulation_gradients = (
-            self._calculate_chordwise_circulation_gradients()
-        )
-        spanwise_circulation_gradients = (
-            self._calculate_spanwise_circulation_gradients()
-        )
+        # Calculate vorticity gradients.
+        chordwise_vorticity_gradients = self._calculate_chordwise_vorticity_gradients()
+        spanwise_vorticity_gradients = self._calculate_spanwise_vorticity_gradients()
 
         # Calculate velocity at Panel centroids.
         stackVelocityCentroid_GP1__E = (
@@ -1509,39 +1505,26 @@ class UnsteadyRingVortexLatticeMethodSolver:
             "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackSpanwiseTangent_GP1
         )
 
-        # Time derivative of circulation.
+        # Time derivative of vorticity.
         d_gamma_dt = (
             self._current_bound_vortex_strengths - self._last_bound_vortex_strengths
         ) / self.delta_time
 
-        # Pressure difference (guard against division by zero).
-        chord_term = np.zeros(self.num_panels, dtype=float)
-        span_term = np.zeros(self.num_panels, dtype=float)
-
-        nonzero_chord = self._panel_chord_lengths > 0
-        nonzero_span = self._panel_span_lengths > 0
-
-        chord_term[nonzero_chord] = (
-            chordwise_velocity_component[nonzero_chord]
-            * chordwise_circulation_gradients[nonzero_chord]
-            / self._panel_chord_lengths[nonzero_chord]
-        )
-
-        span_term[nonzero_span] = (
-            spanwise_velocity_component[nonzero_span]
-            * spanwise_circulation_gradients[nonzero_span]
-            / self._panel_span_lengths[nonzero_span]
-        )
+        # Compute the chordwise and spanwise pressure terms. The vorticity gradient
+        # functions now return true gradients, so we simply multiply by the velocity
+        # components without dividing by Panel lengths.
+        chord_term = chordwise_velocity_component * chordwise_vorticity_gradients
+        span_term = spanwise_velocity_component * spanwise_vorticity_gradients
 
         # Calculate the pressure difference across each Panel using Katz and Plotkin
         # Eq. 13.150. The equation is: delta_p = rho * (V.tau_i * dGamma/dx +
         # V.tau_j * dGamma/dy + dGamma/dt). However, the unsteady term (dGamma/dt)
         # is subtracted here instead of added to account for a sign convention
         # mismatch between Ptera Software and the reference literature. Ptera
-        # Software defines RingVortices with counter-clockwise (CCW) vertex ordering,
+        # Software defines RingVortices with counter clockwise (CCW) vertex ordering,
         # while Katz and Plotkin use clockwise (CW) ordering. This affects the unsteady
         # term because pressure acts in the direction of the panel normal, and the
-        # time derivative of circulation has the opposite sign under CCW vs. CW
+        # time derivative of vorticity has the opposite sign under CCW vs. CW
         # conventions. See the similar correction in _calculate_loads_joukowski()
         # and issue #27: https://github.com/camUrban/PteraSoftware/issues/27
         delta_p = self.current_operating_point.rho * (
@@ -1565,17 +1548,17 @@ class UnsteadyRingVortexLatticeMethodSolver:
 
         _functions.process_solver_loads(self, forces_GP1, moments_GP1_CgP1)
 
-    def _calculate_chordwise_circulation_gradients(self) -> np.ndarray:
-        """Calculates the chordwise circulation gradient for each Panel.
+    # REFACTOR: Why are we treating the leading and trailing edges differently?
+    def _calculate_chordwise_vorticity_gradients(self) -> np.ndarray:
+        """Calculates the chordwise vortex strength gradient for each Panel.
 
-        The chordwise gradient is (Gamma_ij - Gamma_i-1,j), where i is the chordwise
-        index (from leading edge toward trailing edge).
+        Uses backward differencing for non leading edge Panels and a one sided
+        difference for leading edge Panels. The gradient is computed as the vortex
+        strength difference divided by the actual distance between panel centers, which
+        correctly handles non uniform panel spacing.
 
-        For leading edge Panels, the gradient equals the Panel's circulation (assuming
-        zero circulation ahead of the wing).
-
-        :return: A (N,) ndarray of floats representing the chordwise circulation
-            gradient for each Panel. The units are in meters squared per second.
+        :return: A (N,) ndarray of floats representing the chordwise vorticity gradient
+            for each Panel. The units are in meters per second.
         """
         chordwise_gradients = np.zeros(self.num_panels, dtype=float)
         global_panel_position = 0
@@ -1585,6 +1568,9 @@ class UnsteadyRingVortexLatticeMethodSolver:
                 _panels = wing.panels
                 assert _panels is not None
 
+                num_chordwise, num_spanwise = _panels.shape
+                wing_start_global = global_panel_position
+
                 panels = np.ravel(_panels)
 
                 panel: _panel.Panel
@@ -1597,36 +1583,54 @@ class UnsteadyRingVortexLatticeMethodSolver:
                     this_gamma = self._current_bound_vortex_strengths[
                         global_panel_position
                     ]
+                    this_chord = self._panel_chord_lengths[global_panel_position]
 
                     if panel.is_leading_edge:
-                        chordwise_gradients[global_panel_position] = this_gamma
+                        # Leading edge: distance from leading edge to panel center is
+                        # this_chord / 2. This assumes zero vorticity upstream of the
+                        # wing.
+                        distance = this_chord / 2
+                        if distance > 0:
+                            chordwise_gradients[global_panel_position] = (
+                                this_gamma / distance
+                            )
                     else:
-                        panel_in_front: _panel.Panel = _panels[
-                            _local_chordwise_position - 1,
-                            _local_spanwise_position,
-                        ]
-                        ring_vortex_in_front = panel_in_front.ring_vortex
-                        assert ring_vortex_in_front is not None
-
-                        chordwise_gradients[global_panel_position] = (
-                            this_gamma - ring_vortex_in_front.strength
+                        # Non leading edge: use backward difference.
+                        front_global = (
+                            wing_start_global
+                            + (_local_chordwise_position - 1) * num_spanwise
+                            + _local_spanwise_position
                         )
+                        gamma_front = self._current_bound_vortex_strengths[front_global]
+                        chord_front = self._panel_chord_lengths[front_global]
+
+                        # Distance from center of front panel to center of this panel.
+                        distance = (chord_front + this_chord) / 2
+                        if distance > 0:
+                            chordwise_gradients[global_panel_position] = (
+                                this_gamma - gamma_front
+                            ) / distance
 
                     global_panel_position += 1
 
         return chordwise_gradients
 
-    def _calculate_spanwise_circulation_gradients(self) -> np.ndarray:
-        """Calculates the spanwise circulation gradient for each Panel.
+    # REFACTOR: Determine if we should switch to using different treatment of the right
+    #  and left edges. Should we assume zero vorticity off the wing and calculate the
+    #  gradient the same way we did for the chordwise gradient at the leading edge?
+    def _calculate_spanwise_vorticity_gradients(self) -> np.ndarray:
+        """Calculates the spanwise vorticity gradient for each Panel.
 
-        The spanwise gradient is (Gamma_ij - Gamma_i,j-1), where j is the spanwise index
-        (from left edge toward right edge).
+        Uses central differencing for interior Panels and one sided differences at the
+        edges to ensure symmetric treatment of left and right wing tips. The gradient is
+        computed as the vortex strength difference divided by the actual distance
+        between Panel centers, which correctly handles non-uniform Panel spacing.
 
-        For left edge Panels, the gradient equals the Panel's circulation (assuming zero
-        circulation to the left of the wing).
+        This symmetric treatment prevents spurious roll moments that would arise from
+        asymmetric gradient calculations.
 
-        :return: A (N,) ndarray of floats representing the spanwise circulation gradient
-            for each Panel. The units are in meters squared per second.
+        :return: A (N,) ndarray of floats representing the spanwise vorticity gradient
+            for each Panel. The units are in meters per second.
         """
         spanwise_gradients = np.zeros(self.num_panels, dtype=float)
         global_panel_position = 0
@@ -1636,6 +1640,9 @@ class UnsteadyRingVortexLatticeMethodSolver:
                 _panels = wing.panels
                 assert _panels is not None
 
+                num_chordwise, num_spanwise = _panels.shape
+                wing_start_global = global_panel_position
+
                 panels = np.ravel(_panels)
 
                 panel: _panel.Panel
@@ -1648,20 +1655,73 @@ class UnsteadyRingVortexLatticeMethodSolver:
                     this_gamma = self._current_bound_vortex_strengths[
                         global_panel_position
                     ]
+                    this_span = self._panel_span_lengths[global_panel_position]
 
-                    if panel.is_left_edge:
-                        spanwise_gradients[global_panel_position] = this_gamma
-                    else:
-                        panel_to_left: _panel.Panel = _panels[
-                            _local_chordwise_position,
-                            _local_spanwise_position - 1,
-                        ]
-                        ring_vortex_to_left = panel_to_left.ring_vortex
-                        assert ring_vortex_to_left is not None
-
-                        spanwise_gradients[global_panel_position] = (
-                            this_gamma - ring_vortex_to_left.strength
+                    if panel.is_left_edge and panel.is_right_edge:
+                        # Single Panel in spanwise direction: gradient is zero.
+                        spanwise_gradients[global_panel_position] = 0.0
+                    elif panel.is_left_edge:
+                        # Left edge: use forward difference.
+                        right_global = (
+                            wing_start_global
+                            + _local_chordwise_position * num_spanwise
+                            + (_local_spanwise_position + 1)
                         )
+                        gamma_right = self._current_bound_vortex_strengths[right_global]
+                        span_right = self._panel_span_lengths[right_global]
+
+                        # Distance from center of this Panel to center of the right
+                        # Panel.
+                        distance = (this_span + span_right) / 2
+                        if distance > 0:
+                            spanwise_gradients[global_panel_position] = (
+                                gamma_right - this_gamma
+                            ) / distance
+                    elif panel.is_right_edge:
+                        # Right edge: use backward difference.
+                        left_global = (
+                            wing_start_global
+                            + _local_chordwise_position * num_spanwise
+                            + (_local_spanwise_position - 1)
+                        )
+                        gamma_left = self._current_bound_vortex_strengths[left_global]
+                        span_left = self._panel_span_lengths[left_global]
+
+                        # Distance from center of the left Panel to center of this
+                        # Panel.
+                        distance = (span_left + this_span) / 2
+                        if distance > 0:
+                            spanwise_gradients[global_panel_position] = (
+                                this_gamma - gamma_left
+                            ) / distance
+                    else:
+                        # Interior Panel: use central difference.
+                        right_global = (
+                            wing_start_global
+                            + _local_chordwise_position * num_spanwise
+                            + (_local_spanwise_position + 1)
+                        )
+                        left_global = (
+                            wing_start_global
+                            + _local_chordwise_position * num_spanwise
+                            + (_local_spanwise_position - 1)
+                        )
+
+                        gamma_right = self._current_bound_vortex_strengths[right_global]
+                        gamma_left = self._current_bound_vortex_strengths[left_global]
+                        span_right = self._panel_span_lengths[right_global]
+                        span_left = self._panel_span_lengths[left_global]
+
+                        # REFACTOR: Determine if this central distance formula is still
+                        #  valid for non uniform spacings. Do the center Panel's
+                        #  attributes still drop out?
+                        # Distance from center of the left Panel to center of the right
+                        # Panel.
+                        distance = (span_left + 2 * this_span + span_right) / 2
+                        if distance > 0:
+                            spanwise_gradients[global_panel_position] = (
+                                gamma_right - gamma_left
+                            ) / distance
 
                     global_panel_position += 1
 
