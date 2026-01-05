@@ -1495,44 +1495,41 @@ class UnsteadyRingVortexLatticeMethodSolver:
             + self._calculate_current_movement_velocities_at_centroids()
         )
 
-        # Chordwise velocity component (V dot tau_i).
+        # Calculate the chordwise velocity component.
         chordwise_velocity_component = np.einsum(
             "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackChordwiseTangent_GP1
         )
 
-        # Spanwise velocity component (V dot tau_j).
+        # Calculate the spanwise velocity component.
         spanwise_velocity_component = np.einsum(
             "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackSpanwiseTangent_GP1
         )
 
-        # Time derivative of vorticity.
-        d_gamma_dt = (
+        # Calculate the time derivatives of the vortex strengths.
+        stackVortexStrengthTimeDerivatives__E = (
             self._current_bound_vortex_strengths - self._last_bound_vortex_strengths
         ) / self.delta_time
 
-        # Compute the chordwise and spanwise pressure terms. The vorticity gradient
-        # functions now return true gradients, so we simply multiply by the velocity
-        # components without dividing by Panel lengths.
+        # Compute the chordwise and spanwise pressure terms.
         chord_term = chordwise_velocity_component * chordwise_vorticity_gradients
         span_term = spanwise_velocity_component * spanwise_vorticity_gradients
 
-        # Calculate the pressure difference across each Panel using Katz and Plotkin
-        # Eq. 13.150. The equation is: delta_p = rho * (V.tau_i * dGamma/dx +
-        # V.tau_j * dGamma/dy + dGamma/dt). However, the unsteady term (dGamma/dt)
-        # is subtracted here instead of added to account for a sign convention
-        # mismatch between Ptera Software and the reference literature. Ptera
-        # Software defines RingVortices with counter clockwise (CCW) vertex ordering,
-        # while Katz and Plotkin use clockwise (CW) ordering. This affects the unsteady
-        # term because pressure acts in the direction of the panel normal, and the
-        # time derivative of vorticity has the opposite sign under CCW vs. CW
-        # conventions. See the similar correction in _calculate_loads_joukowski()
-        # and issue #27: https://github.com/camUrban/PteraSoftware/issues/27
+        # Calculate the pressure difference across each Panel using Katz and Plotkin Eq.
+        # 13.150. However, here the unsteady term is subtracted instead of added to
+        # account for a sign convention mismatch between Ptera Software and the
+        # reference literature. Ptera Software defines RingVortices with counter
+        # clockwise (CCW) vertex ordering, while Katz and Plotkin use clockwise (CW)
+        # ordering. This affects the unsteady term because pressure acts in the
+        # direction of the panel normal, and the time derivative of vorticity has the
+        # opposite sign under CCW vs. CW conventions. See the similar correction in
+        # _calculate_loads_joukowski() and issue #27:
+        # https://github.com/camUrban/PteraSoftware/issues/27
         delta_p = self.current_operating_point.rho * (
-            chord_term + span_term - d_gamma_dt
+            chord_term + span_term - stackVortexStrengthTimeDerivatives__E
         )
 
-        # Force on each Panel: F = delta_p x S x n_hat.
-        # The pressure difference delta_p is defined as p_lower - p_upper, and the
+        # The force on each Panel, in the first Airplane's geometry axes, is delta_p *
+        # panel_area * unitNormal_GP1. delta_p is defined as p_lower - p_upper, and the
         # normal vector points upward, so positive delta_p produces upward force.
         forces_GP1 = (
             np.expand_dims(delta_p, axis=1)
@@ -1540,8 +1537,9 @@ class UnsteadyRingVortexLatticeMethodSolver:
             * self.stackUnitNormals_GP1
         )
 
-        # Moments (in the first Airplanes geometry axes, with respect to the first
-        # Airplane's CG) from forces applied at the centroids of each Panel.
+        # Find the moment due to the force on each Panel, in the first Airplanes
+        # geometry axes, with respect to the first Airplane's CG, from forces applied at
+        # the centroids of each Panel.
         moments_GP1_CgP1 = _functions.numba_1d_explicit_cross(
             self._stackCentroid_GP1_CgP1, forces_GP1
         )
