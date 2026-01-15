@@ -165,6 +165,7 @@
       <w>lachassgne</w>
       <w>lanz</w>
       <w>lbrv</w>
+      <w>ldots</w>
       <w>legacysolvers</w>
       <w>leishman</w>
       <w>lers</w>
@@ -180,6 +181,7 @@
       <w>marske</w>
       <w>massa</w>
       <w>mathbf</w>
+      <w>mathrm</w>
       <w>matplotlib</w>
       <w>maxfev</w>
       <w>maxfun</w>
@@ -202,6 +204,7 @@
       <w>noninfringement</w>
       <w>numba</w>
       <w>numexpr</w>
+      <w>oint</w>
       <w>onera</w>
       <w>ornithopter</w>
       <w>pathex</w>
@@ -270,6 +273,7 @@
       <w>uninsdeletekey</w>
       <w>uninsdeletevalue</w>
       <w>unitless</w>
+      <w>unst</w>
       <w>usnps</w>
       <w>uvlm</w>
       <w>vawt</w>
