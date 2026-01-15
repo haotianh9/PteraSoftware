@@ -696,6 +696,83 @@ New test cases:
 | First time step (no wake)                      | w_wake = 0, proceed normally                                                  |
 | Leading edge Panel                             | Gamma_{i-1,j} = 0 as specified by Katz and Plotkin                            |
 
+### Current Status and Findings
+
+**Status: Debugging in Progress**
+
+Steps 10, 11, and 12 are implemented but the results are not matching expectations. The new Katz method with Lambert's induced drag correction is producing **higher** drag than the old pressure projection method, when it should produce **lower** drag.
+
+#### Test Results Summary
+
+| Method                         | C_D    | C_L   | Notes                          |
+|--------------------------------|--------|-------|--------------------------------|
+| Joukowski                      | 0.0150 | 0.474 | Reference method               |
+| Old Katz (pressure projection) | 0.0337 | 0.599 | Baseline                       |
+| New Katz (Lambert correction)  | 0.0845 | 0.582 | **150% higher than old Katz!** |
+
+#### Force Component Analysis
+
+Detailed analysis of force components reveals:
+
+**Old Katz Method** (F = Δp × S × n):
+- Total Fx = -22.78 N (thrust from tilted panels at angle of attack)
+- Total Fz = 734.17 N (lift)
+
+**New Katz Method** (F = D × Û + L × lift_dir):
+- Drag contribution Fx = -35.56 N (thrust from induced drag term)
+- Lift contribution Fx = +77.43 N (drag from tilted lift direction!)
+- Total Fx = +41.87 N (net drag)
+
+#### Root Cause Analysis
+
+The issue is that **the lift direction has a significant x-component** due to the local flow direction being tilted by induced velocities:
+
+1. **Wake induces upwash/downwash**: The wake vortices create induced velocities that tilt the local flow direction away from the freestream.
+
+2. **Lift is perpendicular to local flow**: In Lambert's formulation, lift is perpendicular to the *local* flow direction (Û), not the freestream.
+
+3. **Tilted lift has x-component**: When we sum lift forces across all panels (each perpendicular to its own local Û), the total has a significant x-component because the local flow directions vary.
+
+4. **Induced drag term doesn't fully compensate**: The induced drag term (term 1 from Lambert Eq. 2.15) provides -35.56 N of thrust (leading edge suction), but this doesn't offset the +77.43 N of "lift drag" from the tilted lift directions.
+
+#### Key Observations
+
+1. **Induced drag term 1** (leading edge suction): Sum = -36.07 N (thrust, as expected)
+2. **Induced drag term 2** (unsteady): Sum = +0.31 N (small, as expected for near-steady case)
+3. **Total induced drag**: -35.76 N (net thrust)
+
+The induced velocity components:
+- Chordwise induced: Mean |z| ≈ 0.19 m/s (downwash)
+- Wake induced: Mean |z| ≈ 0.15 m/s (upwash)
+- Net: Small downwash, but varies significantly across wing
+
+#### Potential Issues to Investigate
+
+1. **Lift direction normalization**: Lambert Eq. 2.16 uses `(P_Û × n)` directly without normalization. The current implementation was modified to not normalize, but this only reduced C_D from 0.0858 to 0.0845 (minimal effect because cos(α) ≈ 0.994).
+
+2. **Sign conventions**: The circulation differences are negative due to CCW vertex ordering in Ptera Software. Need to verify this is handled correctly in all terms.
+
+3. **Local flow direction definition**: The local velocity includes induced velocity from the wake. Need to verify whether Lambert's formulation expects this or uses freestream + motion only.
+
+4. **Relationship between OLD and NEW formulations**: The OLD method (F = Δp × S × n) and NEW method (F = D × Û + L × lift_dir) should be mathematically equivalent when D equals the pressure drag component. Currently they give very different results, suggesting a conceptual or implementation error.
+
+5. **Decomposition consistency**: When we decompose the OLD force into drag and lift relative to local flow:
+   - OLD implicit drag: ≈ -100.4 N (from `Δp × S × sin(α) × Û`)
+   - NEW induced drag: -35.76 N
+   - Difference: 64.6 N — this is exactly the Fx difference between methods!
+
+#### Next Steps
+
+1. **Verify Lambert's formulation mathematically**: Confirm that Eq. 2.16 with Eq. 2.14 and 2.15 should reproduce the pressure projection result when there's no leading edge suction correction.
+
+2. **Check the local velocity definition**: Investigate whether the local velocity for the flow direction should include induced velocities or just freestream + motion.
+
+3. **Compare with Katz & Plotkin Eq. 13.152**: Lambert's formulation extends Katz & Plotkin for complex kinematics. For simple straight-line flight, both should agree. Implement K&P's original formula and compare.
+
+4. **Investigate cos²(α) vs cos(α) lift magnitude**: Lambert's Eq. 2.16 with non-normalized lift direction gives lift magnitude of `Δp × S × cos²(α)`, not `Δp × S × cos(α)`. Verify this is physically correct.
+
+5. **Add comprehensive logging**: Create diagnostic output to compare intermediate values between OLD and NEW methods panel-by-panel.
+
 ### Validation Strategy
 
 1. **XLFR5 comparison**: Compare against coefficients from XFLR5 simulations for simple steady cases (see `/tests/integration/test_unsteady_ring_vortex_lattice_method_static_geometry.py`)

@@ -1474,12 +1474,150 @@ class UnsteadyRingVortexLatticeMethodSolver:
         _functions.process_solver_loads(self, forces_GP1, moments_GP1_CgP1)
 
     def _calculate_loads_katz(self) -> None:
-        """Calculates forces using the Katz pressure integration method.
+        """Calculates forces using Katz pressure integration with induced drag
+        correction.
+
+        Implements Lambert (2015) Eq. 2.13 to 2.16, which extend Katz and Plotkin's
+        method to handle complex kinematics by defining lift and drag relative to local
+        Panel velocities. This corrects the overestimated induced drag from the original
+        pressure projection method by properly accounting for leading edge suction.
+
+        **Citation:**
+
+        Equations adapted from: "Modeling of aerodynamic forces in flapping flight with
+        the Unsteady Vortex Lattice Method"
+
+        Author: Thomas Lambert
+
+        :return: None
+        """
+        rho = self.current_operating_point.rho
+
+        # Calculate vorticity gradients.
+        chordwise_vorticity_gradients = self._calculate_chordwise_vorticity_gradients()
+        spanwise_vorticity_gradients = self._calculate_spanwise_vorticity_gradients()
+
+        # Calculate velocity at Panel centroids.
+        stackVelocityCentroid_GP1__E = (
+            self.calculate_solution_velocity(
+                stackP_GP1_CgP1=self._stackCentroid_GP1_CgP1
+            )
+            + self._calculate_current_movement_velocities_at_centroids()
+        )
+
+        # Calculate the chordwise velocity component.
+        chordwise_velocity_component = np.einsum(
+            "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackChordwiseTangent_GP1
+        )
+
+        # Calculate the spanwise velocity component.
+        spanwise_velocity_component = np.einsum(
+            "ij,ij->i", stackVelocityCentroid_GP1__E, self._stackSpanwiseTangent_GP1
+        )
+
+        # Calculate the time derivatives of the vortex strengths.
+        d_gamma_dt = (
+            self._current_bound_vortex_strengths - self._last_bound_vortex_strengths
+        ) / self.delta_time
+
+        # Compute the chordwise and spanwise pressure terms.
+        chord_term = chordwise_velocity_component * chordwise_vorticity_gradients
+        span_term = spanwise_velocity_component * spanwise_vorticity_gradients
+
+        # Calculate the pressure difference across each Panel using Katz and Plotkin Eq.
+        # 13.150. The unsteady term is subtracted instead of added to account for a sign
+        # convention mismatch between Ptera Software and the reference literature. See
+        # _calculate_loads_katz_old() for the detailed explanation.
+        delta_p = rho * (chord_term + span_term - d_gamma_dt)
+
+        # === Induced Drag Correction (Lambert 2015, Eq. 2.13 to 2.16) ===
+
+        # Get local flow reference frame.
+        (
+            stackFlowUnitVectors_GP1,
+            stackLiftDirections_GP1,
+            stackSinAlpha,
+        ) = self._calculate_local_flow_directions(stackVelocityCentroid_GP1__E)
+
+        # cos(alpha) = |P_U_hat * n_hat| (magnitude of lift direction vector).
+        stackCosAlpha = np.linalg.norm(stackLiftDirections_GP1, axis=1)
+        # Prevent division by zero.
+        stackCosAlpha = np.maximum(stackCosAlpha, 1e-10)
+
+        # Lift calculation (Lambert Eq. 2.14): delta_L = delta_p * S * cos(alpha)
+        stackLiftMagnitudes = delta_p * self.panel_areas * stackCosAlpha
+
+        # Induced drag calculation (Lambert Eq. 2.15)
+        # First term: rho * (U_bc + U_w) dot (P_U_hat * n_hat) * delta_Gamma * b
+        # where delta_Gamma = Gamma_{i, j} - Gamma_{i-1, j}
+
+        # Get velocities induced by bound chordwise vortex segments and wake.
+        stackChordwiseInducedVelocity_GP1__E = (
+            self._calculate_chordwise_induced_velocity()
+        )
+        stackWakeInducedVelocity_GP1__E = self._calculate_wake_induced_velocity()
+
+        # Total induced velocity at collocation points.
+        stackTotalInducedVelocity_GP1__E = (
+            stackChordwiseInducedVelocity_GP1__E + stackWakeInducedVelocity_GP1__E
+        )
+
+        # Project induced velocity onto lift direction.
+        # This gives (U_bc + U_w) dot (P_U_hat * n_hat).
+        induced_velocity_lift_component = np.einsum(
+            "ij,ij->i", stackTotalInducedVelocity_GP1__E, stackLiftDirections_GP1
+        )
+
+        # Chordwise circulation differences (Gamma_{i, j} - Gamma_{i-1, j}).
+        chordwise_circulation_diff = self._calculate_chordwise_vorticity_differences()
+
+        # First term of induced drag (Lambert Eq. 2.15):
+        # rho * (U_bc + U_w) dot (P_U_hat * n_hat) * delta_Gamma * b
+        induced_drag_term1 = (
+            rho
+            * induced_velocity_lift_component
+            * chordwise_circulation_diff
+            * self._panel_span_lengths
+        )
+
+        # Second term of induced drag (Lambert Eq. 2.15):
+        # rho * (dGamma/dt) * S * sin(alpha)
+        induced_drag_term2 = rho * d_gamma_dt * self.panel_areas * stackSinAlpha
+
+        stackDragMagnitudes = induced_drag_term1 + induced_drag_term2
+
+        # Net force calculation (Lambert Eq. 2.16):
+        # F = D * U_hat + L * (P_U_hat * n_hat)
+        # Note: The lift direction (P_U_hat * n_hat) is NOT normalized per Lambert's
+        # formulation. This results in lift force magnitude of delta_p * S * cos^2(alpha).
+        forces_GP1 = (
+            stackDragMagnitudes[:, np.newaxis] * stackFlowUnitVectors_GP1
+            + stackLiftMagnitudes[:, np.newaxis] * stackLiftDirections_GP1
+        )
+
+        # Find the moment due to the force on each Panel, in the first Airplane's
+        # geometry axes, with respect to the first Airplane's CG, from forces applied at
+        # the centroids of each Panel.
+        moments_GP1_CgP1 = _functions.numba_1d_explicit_cross(
+            self._stackCentroid_GP1_CgP1, forces_GP1
+        )
+
+        _functions.process_solver_loads(self, forces_GP1, moments_GP1_CgP1)
+
+    def _calculate_loads_katz_old(self) -> None:
+        """Calculates forces using the original Katz pressure integration method.
 
         Implements the force calculation from Katz and Plotkin Section 13.12 (Eq. 13.150
         and 13.151). The pressure difference across each Panel is computed from
         vorticity gradients in the chordwise and spanwise directions, plus the unsteady
         term from the time derivative of vorticity.
+
+        **Notes:**
+
+        This is the original implementation that projects pressure forces onto the Panel
+        normal. It overestimates induced drag because it does not account for leading
+        edge suction. See `_calculate_loads_katz()` for the corrected implementation
+        using Lambert (2015).
 
         :return: None
         """
