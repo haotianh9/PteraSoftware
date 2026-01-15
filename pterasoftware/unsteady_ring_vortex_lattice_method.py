@@ -1750,6 +1750,156 @@ class UnsteadyRingVortexLatticeMethodSolver:
             / self.delta_time,
         )
 
+    def _calculate_chordwise_induced_velocity(self) -> np.ndarray:
+        """Computes velocity at collocation points from bound chordwise vortex segments.
+
+        Returns the velocity induced at each collocation point by the chordwise
+        (streamwise) segments of all bound RingVortices. This corresponds to U_bc in
+        Lambert (2015) Eq. 2.15 and w_ind in Katz and Plotkin Eq. 13.152.
+
+        :return: A (num_panels, 3) ndarray of floats for the induced velocity (in the
+            first Airplane's geometry axes, observed from the Earth frame) at each
+            collocation point. The units are in meters per second.
+        """
+        return cast(
+            np.ndarray,
+            _aerodynamics.collapsed_velocities_from_ring_vortices_chordwise_segments(
+                stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+                stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
+                stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
+                stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
+                stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
+                strengths=self._current_bound_vortex_strengths,
+                ages=None,
+                nu=self.current_operating_point.nu,
+            ),
+        )
+
+    def _calculate_wake_induced_velocity(self) -> np.ndarray:
+        """Computes velocity at collocation points from wake vortices.
+
+        Returns the velocity induced at each collocation point by all wake RingVortices.
+        This corresponds to U_w in Lambert (2015) Eq. 2.15, and w_w in Katz and Plotkin
+        Eq. 13.152.
+
+        :return: A (num_panels, 3) ndarray of floats for the wake induced velocity (in
+            the first Airplane's geometry axes, observed from the Earth frame) at each
+            collocation point. The units are meters per second.
+        """
+        if self._current_step < 1:
+            return np.zeros((self.num_panels, 3), dtype=float)
+
+        return cast(
+            np.ndarray,
+            _aerodynamics.collapsed_velocities_from_ring_vortices(
+                stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+                stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
+                stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
+                stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
+                stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
+                strengths=self._current_wake_vortex_strengths,
+                ages=self._current_wake_vortex_ages,
+                nu=self.current_operating_point.nu,
+            ),
+        )
+
+    def _calculate_local_flow_directions(
+        self,
+        stackLocalVelocity_GP1__E: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Computes local flow unit vectors and projection operators for each Panel.
+
+        Using the notation from Lambert (2015), Section 2.4.2, this method calculates,
+        for each Panel, U_hat (unit vector of local flow velocity, which is the drag
+        direction), P_U_hat * n_hat (Panel normal projected perpendicular to flow, which
+        is the lift direction), and sin(alpha) (the sine of the local angle of attack).
+
+        :param stackLocalVelocity_GP1__E: A (num_panels, 3) ndarray of floats for the
+            local velocity at each Panel's centroid (in the first Airplane's geometry
+            axes, observed from the Earth frame). The units are in meters per second.
+        :return: A tuple of three ndarrays. The first is stackFlowUnitVectors_GP1, a
+            (num_panels, 3) ndarray of floats for the unit flow direction at each Panel
+            (in the first Airplane's geometry axes). The second is
+            stackLiftDirections_GP1, a (num_panels, 3) ndarray of floats for the lift
+            direction vector at each Panel (in the first Airplane's geometry axes). The
+            third is stackSinAlpha, a (num_panels,) ndarray of floats for the sine of
+            the local angle of attack at each Panel. The direction vectors are unitless.
+        """
+        # Compute unit flow vectors U_hat.
+        flow_magnitudes = np.linalg.norm(
+            stackLocalVelocity_GP1__E, axis=1, keepdims=True
+        )
+        # Prevent division by zero.
+        flow_magnitudes = np.maximum(flow_magnitudes, 1e-10)
+        stackFlowUnitVectors_GP1 = stackLocalVelocity_GP1__E / flow_magnitudes
+
+        # Compute sin(alpha) = n_hat dot U_hat for each Panel.
+        stackSinAlpha = np.einsum(
+            "ij,ij->i",
+            self.stackUnitNormals_GP1,
+            stackFlowUnitVectors_GP1,
+        )
+
+        # Compute lift direction: P_U_hat * n_hat = n_hat - (n_hat dot U_hat) * U_hat.
+        # This is the Panel normal with its flow parallel component removed.
+        stackLiftDirections_GP1 = (
+            self.stackUnitNormals_GP1
+            - stackSinAlpha[:, np.newaxis] * stackFlowUnitVectors_GP1
+        )
+
+        return stackFlowUnitVectors_GP1, stackLiftDirections_GP1, stackSinAlpha
+
+    def _calculate_chordwise_vorticity_differences(self) -> np.ndarray:
+        """Computes (Gamma_{i, j} - Gamma_{i-1, j}) for each Panel.
+
+        For leading edge Panels, Gamma_{i-1, j} = 0 (no Panel upstream).
+
+        :return: A (num_panels,) ndarray of floats for the vorticity differences. The
+            units are in meters squared per second.
+        """
+        differences = np.zeros(self.num_panels, dtype=float)
+        global_panel_position = 0
+
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                _panels = wing.panels
+                assert _panels is not None
+
+                num_chordwise, num_spanwise = _panels.shape
+                wing_start_global = global_panel_position
+
+                panels = np.ravel(_panels)
+
+                panel: _panel.Panel
+                for panel in panels:
+                    current_gamma = self._current_bound_vortex_strengths[
+                        global_panel_position
+                    ]
+
+                    if panel.is_leading_edge:
+                        # Leading edge: Gamma_front = 0.
+                        differences[global_panel_position] = current_gamma
+                    else:
+                        # Get strength of Panel in front.
+                        _local_chordwise_position = panel.local_chordwise_position
+                        _local_spanwise_position = panel.local_spanwise_position
+                        assert _local_chordwise_position is not None
+                        assert _local_spanwise_position is not None
+
+                        front_panel_position = (
+                            wing_start_global
+                            + (_local_chordwise_position - 1) * num_spanwise
+                            + _local_spanwise_position
+                        )
+                        front_gamma = self._current_bound_vortex_strengths[
+                            front_panel_position
+                        ]
+                        differences[global_panel_position] = current_gamma - front_gamma
+
+                    global_panel_position += 1
+
+        return differences
+
     def _populate_next_airplanes_wake(self) -> None:
         """Updates the next time step's Airplanes' wakes.
 

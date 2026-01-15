@@ -350,7 +350,7 @@ The implementation includes REFACTOR comments noting areas for potential improve
 
 ---
 
-## Phase 2: Induced Drag Correction (Planned)
+## Phase 2: Induced Drag Correction (In Progress)
 
 ### Overview
 
@@ -418,179 +418,78 @@ This works for any Panel orientation and any local flow direction.
 
 ### Implementation Plan
 
-#### Step 10: Add b_KL Coefficient Infrastructure
+#### Step 10: Compute Chordwise Induced Velocity (Implemented)
 
-**10.1 New Aerodynamics Function**
+**10.1 New Method: `_calculate_chordwise_induced_velocity()` (Implemented)**
 
-Create `expanded_velocities_from_ring_vortices_chordwise_only()` in `_aerodynamics.py`:
+Computes the velocity at collocation points induced by chordwise (streamwise) bound vortex segments only. This uses the existing `collapsed_velocities_from_ring_vortices_chordwise_segments` function with the solved vortex strengths.
+
+**Note:** The original plan proposed pre-computing b_KL influence coefficients (an N x N matrix) and storing them for later matrix-vector multiplication. However, since the Biot-Savart law is linear in vortex strength, we can simply call the existing collapsed velocity function with the actual solved strengths to get the same result. This avoids storing an extra (num_panels x num_panels) matrix and uses existing, tested code.
 
 ```python
-def expanded_velocities_from_ring_vortices_chordwise_only(
-    stackP_GP1_CgP1: np.ndarray,
-    stackBrrvp_GP1_CgP1: np.ndarray,
-    stackFrrvp_GP1_CgP1: np.ndarray,
-    stackFlrvp_GP1_CgP1: np.ndarray,
-    stackBlrvp_GP1_CgP1: np.ndarray,
-    strengths: np.ndarray,
-    ages: np.ndarray | None = None,
-    nu: float = 0.0,
-) -> np.ndarray:
-    """Takes in a group of points and the attributes of a group of RingVortices and
-    finds the induced velocity at every point due to each RingVortex's chordwise
-    (right and left) segments only.
+def _calculate_chordwise_induced_velocity(self) -> np.ndarray:
+    """Computes velocity at collocation points from bound chordwise vortex segments.
 
-    Used to compute b_KL influence coefficients for induced drag calculation per Katz and Plotkin
-    Eq. 13.135 and 13.144. The RingVortex legs are: Leg 0 (Br to Fr, right leg,
-    chordwise, INCLUDED), Leg 1 (Fr to Fl, front leg, spanwise, EXCLUDED), Leg 2
-    (Fl to Bl, left leg, chordwise, INCLUDED), and Leg 3 (Bl to Br, back leg,
-    spanwise, EXCLUDED).
+    Returns the velocity induced at each collocation point by the chordwise
+    (streamwise) segments of all bound RingVortices. This corresponds to U_bc in
+    Lambert (2015) Eq. 2.15 and w_ind in Katz and Plotkin Eq. 13.152.
 
-    :param stackP_GP1_CgP1: A (N, 3) ndarray of floats representing the positions of
-        N points (in the first Airplane's geometry axes, relative to the first
-        Airplane's CG). The units are meters.
-    :param stackBrrvp_GP1_CgP1: A (M, 3) ndarray of floats representing the positions
-        of M RingVortices' back right vertices (in the first Airplane's geometry
-        axes, relative to the first Airplane's CG). The units are meters.
-    :param stackFrrvp_GP1_CgP1: A (M, 3) ndarray of floats representing the positions
-        of M RingVortices' front right vertices (in the first Airplane's geometry
-        axes, relative to the first Airplane's CG). The units are meters.
-    :param stackFlrvp_GP1_CgP1: A (M, 3) ndarray of floats representing the positions
-        of M RingVortices' front left vertices (in the first Airplane's geometry
-        axes, relative to the first Airplane's CG). The units are meters.
-    :param stackBlrvp_GP1_CgP1: A (M, 3) ndarray of floats representing the positions
-        of M RingVortices' back left vertices (in the first Airplane's geometry
-        axes, relative to the first Airplane's CG). The units are meters.
-    :param strengths: A (M,) ndarray of floats representing the strengths of the M
-        RingVortices. The units are meters squared per second.
-    :param ages: For bound RingVortices, this must be None. For RingVortices that
-        have been shed into the wake, it must be a (M,) ndarray of floats
-        representing the ages of the M RingVortices in seconds. The default is None.
-    :param nu: A non negative float representing the kinematic viscosity of the
-        fluid. The units are meters squared per second. The default is 0.0.
-    :return: A (N, M, 3) ndarray of floats for the induced velocity at each of the N
-        points (in the first Airplane's geometry axes, observed from the Earth
-        frame) due to each of the M RingVortices' chordwise segments. The units are
-        meters per second.
+    :return: A (num_panels, 3) ndarray of floats for the induced velocity (in the
+        first Airplane's geometry axes, observed from the Earth frame) at each
+        collocation point. The units are meters per second.
     """
-    # Only compute legs 0 and 2 (right and left = chordwise segments).
-    gridVInd_GP1__E = np.zeros(
-        (stackP_GP1_CgP1.shape[0], strengths.shape[0], 3), dtype=float
+    return _aerodynamics.collapsed_velocities_from_ring_vortices_chordwise_segments(
+        stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+        stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
+        stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
+        stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
+        stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
+        strengths=self._current_bound_vortex_strengths,
+        ages=None,
+        nu=self.current_operating_point.nu,
     )
-
-    # Leg 0: Br to Fr (right leg).
-    gridVInd_GP1__E += _expanded_velocities_from_line_vortices(
-        stackP_GP1_CgP1=stackP_GP1_CgP1,
-        stackSlvp_GP1_CgP1=stackBrrvp_GP1_CgP1,
-        stackElvp_GP1_CgP1=stackFrrvp_GP1_CgP1,
-        strengths=strengths,
-        ages=ages,
-        nu=nu,
-    )
-
-    # Leg 2: Fl to Bl (left leg).
-    gridVInd_GP1__E += _expanded_velocities_from_line_vortices(
-        stackP_GP1_CgP1=stackP_GP1_CgP1,
-        stackSlvp_GP1_CgP1=stackFlrvp_GP1_CgP1,
-        stackElvp_GP1_CgP1=stackBlrvp_GP1_CgP1,
-        strengths=strengths,
-        ages=ages,
-        nu=nu,
-    )
-
-    return gridVInd_GP1__E
 ```
 
-**10.2 New Instance Attributes**
+**10.2 New Method: `_calculate_wake_induced_velocity()` (Implemented)**
 
-Add to `__init__` in `UnsteadyRingVortexLatticeMethodSolver`:
-
-```python
-# Induced drag calculation arrays (Phase 2).
-self._currentGridChordwiseInfluences__E: np.ndarray = np.empty(0, dtype=float)
-```
-
-**10.3 New Method: `_calculate_chordwise_wing_influences()`**
+Computes the velocity at collocation points induced by wake vortices. The wake-wing influences are already computed for the linear system RHS, but we need the full velocity vector (not just the normal component) for the induced drag calculation.
 
 ```python
-def _calculate_chordwise_wing_influences(self) -> None:
-    """Computes b_KL influence coefficients from chordwise vortex segments only.
+def _calculate_wake_induced_velocity(self) -> np.ndarray:
+    """Computes velocity at collocation points from wake vortices.
 
-    These coefficients are used for induced drag calculation per Katz and Plotkin Eq. 13.144.
-    Unlike the full wing wing influences (a_KL), these only include the velocity
-    induced by the right and left (chordwise/streamwise) legs of each RingVortex.
+    Returns the velocity induced at each collocation point by all wake RingVortices.
+    This corresponds to U_w in Lambert (2015) Eq. 2.15.
 
-    :return: None
+    :return: A (num_panels, 3) ndarray of floats for the wake induced velocity (in
+        the first Airplane's geometry axes, observed from the Earth frame) at each
+        collocation point. The units are meters per second.
     """
-    gridNormVIndCpp_GP1_E = (
-        _aerodynamics.expanded_velocities_from_ring_vortices_chordwise_only(
-            stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
-            stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
-            stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
-            stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
-            stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
-            strengths=self._current_bound_vortex_strengths,
-            ages=None,
-            nu=self.current_operating_point.nu,
-        )
-    )
+    if self._current_step < 1:
+        return np.zeros((self.num_panels, 3), dtype=float)
 
-    # Project onto Panel normals to get b_KL coefficients.
-    self._currentGridChordwiseInfluences__E = np.einsum(
-        "...k,...k->...",
-        gridNormVIndCpp_GP1_E,
-        np.expand_dims(self.stackUnitNormals_GP1, axis=1),
+    return _aerodynamics.collapsed_velocities_from_ring_vortices(
+        stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+        stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
+        stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
+        stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
+        stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
+        strengths=self._current_wake_vortex_strengths,
+        ages=self._current_wake_vortex_ages,
+        nu=self.current_operating_point.nu,
     )
 ```
 
-#### Step 11: Compute Induced Downwash
+#### Step 11: Local Reference Frame Calculation (Implemented)
 
-**11.1 New Method: `_calculate_induced_downwash()`**
+**11.1 New Method: `_calculate_local_flow_directions()` (Implemented)**
 
-```python
-def _calculate_induced_downwash(self) -> np.ndarray:
-    """Computes the induced downwash at each Panel from chordwise vortices.
-
-    Implements Katz and Plotkin's w_ind calculation: the normal velocity component induced at
-    each collocation point by the chordwise (streamwise) vortex segments of all
-    bound RingVortices.
-
-    :return: A (num_panels,) ndarray of floats for the induced downwash values. The
-        units are meters per second.
-    """
-    # w_ind_K = sum over L of (b_KL * Gamma_L)
-    return np.einsum(
-        "KL,L->K",
-        self._currentGridChordwiseInfluences__E,
-        self._current_bound_vortex_strengths,
-    )
-```
-
-**11.2 Wake Downwash**
-
-The wake induced velocity at collocation points is already computed for the RHS. We need to store it separately:
-
-```python
-def _calculate_wake_downwash(self) -> np.ndarray:
-    """Computes the wake induced downwash at each Panel collocation point.
-
-    :return: A (num_panels,) ndarray of floats for the wake induced downwash values.
-        The units are meters per second.
-    """
-    if self._current_time_step == 0:
-        return np.zeros(self.num_panels, dtype=float)
-
-    # This is already computed as part of wake wing influences.
-    # Return the normal component of wake induced velocity.
-    return self._currentStackWakeWingInfluences__E
-```
-
-#### Step 12: Local Reference Frame Calculation
-
-**12.1 New Method: `_calculate_local_flow_directions()`**
+The actual implementation takes the local velocities as a parameter rather than reading from an instance attribute:
 
 ```python
 def _calculate_local_flow_directions(
     self,
+    stackLocalVelocity_GP1__E: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Computes local flow unit vectors and projection operators for each Panel.
 
@@ -634,11 +533,19 @@ def _calculate_local_flow_directions(
     return stackFlowUnitVectors_GP1, stackLiftDirections_GP1, stackSinAlpha
 ```
 
-#### Step 13: Modify `_calculate_loads_katz()` for Proper Drag
+#### Step 12: Implement Lambert's Force Calculation
 
-**13.1 Updated Force Calculation**
+**12.1 Rename Current Method and Create New Implementation**
 
-Replace the current force calculation with Lambert's decomposition:
+To preserve the current implementation for reference and comparison:
+
+1. Rename `_calculate_loads_katz()` to `_calculate_loads_katz_old()`
+2. Create a new `_calculate_loads_katz()` that implements Lambert's decomposition
+3. Update the dispatcher in `_calculate_loads()` if needed
+
+**New `_calculate_loads_katz()` Implementation:**
+
+Implements Lambert's decomposition:
 
 ```python
 def _calculate_loads_katz(self) -> None:
@@ -716,10 +623,10 @@ def _calculate_loads_katz(self) -> None:
     # ... [rest of existing code to apply forces to Panels] ...
 ```
 
-**13.2 New Helper Method: `_calculate_chordwise_circulation_differences()`**
+**12.2 New Helper Method: `_calculate_chordwise_vorticity_differences()` (Implemented)**
 
 ```python
-def _calculate_chordwise_circulation_differences(self) -> np.ndarray:
+def _calculate_chordwise_vorticity_differences(self) -> np.ndarray:
     """Computes (Gamma_ij - Gamma_{i-1,j}) for each Panel.
 
     For leading edge Panels, Gamma_{i-1,j} = 0 (no Panel upstream).
@@ -762,18 +669,7 @@ def _calculate_chordwise_circulation_differences(self) -> np.ndarray:
     return differences
 ```
 
-#### Step 14: Integration into Time Step Loop
-
-**Location**: In `run()` method, after influence coefficient calculation.
-
-```python
-# After calculating wing wing influences:
-if self._force_method == "katz":
-    _logger.debug("Calculating the chordwise only wing influences for induced drag.")
-    self._calculate_chordwise_wing_influences()
-```
-
-#### Step 15: Unit Tests
+#### Step 13: Unit Tests
 
 **File**: `tests/unit/test_unsteady_ring_vortex_lattice_method.py`
 
@@ -782,7 +678,7 @@ New test cases:
 - `test_katz_induced_drag_lower_than_pressure_drag`: Verify induced drag correction reduces drag estimate
 - `test_katz_local_angle_of_attack_calculation`: Verify sin/cos alpha computation for known geometry
 
-#### Step 16: Integration Tests
+#### Step 14: Integration Tests
 
 **File**: `tests/integration/test_unsteady_ring_vortex_lattice_method_force_methods.py`
 
