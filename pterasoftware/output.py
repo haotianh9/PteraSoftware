@@ -1142,7 +1142,7 @@ def print_results(
             case _:
                 raise ValueError(f"Unknown solver type: {solver_type}")
 
-        col2 = [
+        col2_values = [
             these_forces_W[0],
             these_forces_W[1],
             these_forces_W[2],
@@ -1156,14 +1156,17 @@ def print_results(
             these_momentCoefficients_W_CgP1[1],
             these_momentCoefficients_W_CgP1[2],
         ]
-        col2 = [str(np.round(val, 3)) for val in col2]
+        # Use scientific notation for loads, and fixed-precision for load coefficients.
+        col2 = [
+            f"{val:.3e}" if i < 6 else f"{val:.3f}" for i, val in enumerate(col2_values)
+        ]
         col2 = [
             val + " N" if i < 3 else val + " Nm" if i < 6 else val
             for i, val in enumerate(col2)
         ]
         col2_space = max(len(elem) for elem in col2) + 2 * padding_spaces
 
-        col4 = [
+        col4_values = [
             -these_forces_W[0],
             these_forces_W[1],
             -these_forces_W[2],
@@ -1177,7 +1180,10 @@ def print_results(
             these_momentCoefficients_W_CgP1[1],
             these_momentCoefficients_W_CgP1[2],
         ]
-        col4 = [str(np.round(val, 3)) for val in col4]
+        # Use scientific notation for loads, fixed-precision for load coefficients.
+        col4 = [
+            f"{val:.3e}" if i < 6 else f"{val:.3f}" for i, val in enumerate(col4_values)
+        ]
         col4 = [
             val + " N" if i < 3 else val + " Nm" if i < 6 else val
             for i, val in enumerate(col4)
