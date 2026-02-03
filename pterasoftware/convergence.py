@@ -2207,7 +2207,7 @@ def _visualize_wing_mesh(
     """
     # Create the plotter
     plotter = pv.Plotter(off_screen=not show, window_size=[1024, 768])
-    plotter.set_background("black")
+    plotter.set_background("black")  # type: ignore[arg-type]
 
     # Build panel surfaces
     panel_vertices = np.empty((0, 3), dtype=float)
@@ -2270,7 +2270,7 @@ def _visualize_wing_mesh(
     plotter.add_text(stats_text, position="upper_left", font_size=10, color="white")
 
     # Set camera view
-    plotter.view_isometric()
+    plotter.view_isometric()  # type: ignore[call-arg]
     plotter.camera.zoom(1.2)
 
     # Log statistics
@@ -2484,6 +2484,7 @@ def analyze_unsteady_convergence_non_trapezoidal(
     if visualize_meshes and visualization_dir is None:
         raise ValueError("visualization_dir is required when visualize_meshes is True.")
     if visualize_meshes:
+        assert visualization_dir is not None
         Path(visualization_dir).mkdir(parents=True, exist_ok=True)
 
     # ==========================================================================
@@ -2741,6 +2742,8 @@ def analyze_unsteady_convergence_non_trapezoidal(
                         )
 
                         vis_filename = f"mesh_ar{panel_aspect_ratio}_chord{num_chordwise_panels}.png"
+
+                        assert visualization_dir is not None
                         vis_path = Path(visualization_dir) / vis_filename
                         _visualize_wing_mesh(
                             this_base_airplane,
