@@ -2304,7 +2304,8 @@ def analyze_unsteady_convergence_non_trapezoidal(
     visualize_meshes: bool | np.bool_ = False,
     visualization_dir: str | None = None,
     delta_time: float | None = None,
-) -> tuple[bool, int, int, int] | tuple[None, None, None, None]:
+    delta_time_bounds: tuple[float, float] | None = None,
+) -> tuple[float | None, bool, int, int, int] | tuple[None, None, None, None, None]:
     """Finds the converged parameters of an UnsteadyProblem with non-trapezoidal wings.
 
     This function is designed for wings defined with many WingCrossSection objects, each
@@ -2370,9 +2371,15 @@ def analyze_unsteady_convergence_non_trapezoidal(
     :param delta_time: The time step to use for all simulations. If None (default),
         Movement will calculate a time step automatically. For high-frequency flapping,
         consider setting this explicitly (e.g., 1/frequency/steps_per_cycle) to ensure
-        adequate temporal resolution.
-    :return: Tuple of (converged_wake, converged_wake_length, converged_panel_ar,
-        converged_num_chordwise_panels), or (None, None, None, None) if not converged.
+        adequate temporal resolution. Cannot be used with delta_time_bounds.
+    :param delta_time_bounds: Range of delta_time values to test, from coarsest
+        (largest) to finest (smallest). Must be a tuple of two positive floats with the
+        first value greater than or equal to the second. If None (default), delta_time
+        convergence is not checked. Cannot be used with delta_time parameter. The units
+        are seconds.
+    :return: Tuple of (converged_delta_time, converged_wake, converged_wake_length,
+        converged_panel_ar, converged_num_chordwise_panels), or (None, None, None, None,
+        None) if not converged.
     """
     # ==========================================================================
     # VALIDATION
@@ -2487,6 +2494,24 @@ def analyze_unsteady_convergence_non_trapezoidal(
         assert visualization_dir is not None
         Path(visualization_dir).mkdir(parents=True, exist_ok=True)
 
+    # Validate delta_time and delta_time_bounds mutual exclusivity
+    if delta_time is not None and delta_time_bounds is not None:
+        raise ValueError("delta_time and delta_time_bounds cannot both be provided.")
+
+    # Validate delta_time_bounds
+    if delta_time_bounds is not None:
+        if not (isinstance(delta_time_bounds, tuple) and len(delta_time_bounds) == 2):
+            raise TypeError("delta_time_bounds must be a tuple with length 2.")
+        if not all(isinstance(bound, (int, float)) for bound in delta_time_bounds):
+            raise TypeError("Both values in delta_time_bounds must be numbers.")
+        if not all(bound > 0 for bound in delta_time_bounds):
+            raise ValueError("Both values in delta_time_bounds must be positive.")
+        if delta_time_bounds[0] < delta_time_bounds[1]:
+            raise ValueError(
+                "The first value in delta_time_bounds must be greater than or "
+                "equal to the second value."
+            )
+
     # ==========================================================================
     # SETUP
     # ==========================================================================
@@ -2529,9 +2554,23 @@ def analyze_unsteady_convergence_non_trapezoidal(
         range(num_chordwise_panels_bounds[0], num_chordwise_panels_bounds[1] + 1)
     )
 
+    # Create delta_time iteration list using halving pattern
+    if delta_time_bounds is not None:
+        delta_time_list: list[float | None] = []
+        current_dt = float(delta_time_bounds[0])
+        target_dt = float(delta_time_bounds[1])
+        while current_dt >= target_dt:
+            delta_time_list.append(current_dt)
+            current_dt = current_dt / 2.0
+        if delta_time_list[-1] != target_dt:
+            delta_time_list.append(target_dt)
+    else:
+        delta_time_list = [delta_time]
+
     # Initialize result storage arrays
     iter_times = np.zeros(
         (
+            len(delta_time_list),
             len(wake_list),
             len(wake_lengths_list),
             len(panel_aspect_ratios_list),
@@ -2541,6 +2580,7 @@ def analyze_unsteady_convergence_non_trapezoidal(
     )
     combinedFinalLoadCoefficients = np.zeros(
         (
+            len(delta_time_list),
             len(wake_list),
             len(wake_lengths_list),
             len(panel_aspect_ratios_list),
@@ -2557,7 +2597,8 @@ def analyze_unsteady_convergence_non_trapezoidal(
 
     iteration = 0
     num_iterations = (
-        len(wake_list)
+        len(delta_time_list)
+        * len(wake_list)
         * len(wake_lengths_list)
         * len(panel_aspect_ratios_list)
         * len(num_chordwise_panels_list)
@@ -2567,197 +2608,202 @@ def analyze_unsteady_convergence_non_trapezoidal(
     # MAIN ITERATION LOOPS
     # ==========================================================================
 
-    for wake_id, wake in enumerate(wake_list):
-        if wake:
-            convergence_logger.info("\tWake type: prescribed")
+    for dt_id, this_delta_time in enumerate(delta_time_list):
+        if this_delta_time is not None:
+            convergence_logger.info(f"\tDelta time: {this_delta_time:.6f} s")
         else:
-            convergence_logger.info("\tWake type: free")
+            convergence_logger.info("\tDelta time: auto-calculated")
 
-        for length_id, wake_length in enumerate(wake_lengths_list):
-            if static:
-                convergence_logger.info("\t\tChord lengths: " + str(wake_length))
+        for wake_id, wake in enumerate(wake_list):
+            if wake:
+                convergence_logger.info("\t\tWake type: prescribed")
             else:
-                convergence_logger.info("\t\tCycles: " + str(wake_length))
+                convergence_logger.info("\t\tWake type: free")
 
-            for ar_id, panel_aspect_ratio in enumerate(panel_aspect_ratios_list):
-                convergence_logger.info(
-                    "\t\t\tPanel aspect ratio: " + str(panel_aspect_ratio)
-                )
+            for length_id, wake_length in enumerate(wake_lengths_list):
+                if static:
+                    convergence_logger.info("\t\t\tChord lengths: " + str(wake_length))
+                else:
+                    convergence_logger.info("\t\t\tCycles: " + str(wake_length))
 
-                for chord_id, num_chordwise_panels in enumerate(
-                    num_chordwise_panels_list
-                ):
+                for ar_id, panel_aspect_ratio in enumerate(panel_aspect_ratios_list):
                     convergence_logger.info(
-                        "\t\t\t\tChordwise Panels: " + str(num_chordwise_panels)
+                        "\t\t\t\tPanel aspect ratio: " + str(panel_aspect_ratio)
                     )
 
-                    iteration += 1
-                    convergence_logger.info(
-                        f"\t\t\t\t\tIteration {iteration}/{num_iterations}"
-                    )
-
-                    # ----------------------------------------------------------
-                    # BUILD GEOMETRY FOR THIS ITERATION
-                    # ----------------------------------------------------------
-
-                    these_base_wings = []
-                    these_wing_movements = []
-
-                    for wing_id in range(num_wings):
-                        ref_wing_movement = ref_airplane_movement.wing_movements[
-                            wing_id
-                        ]
-                        ref_base_wing = ref_wing_movement.base_wing
-
-                        # Get span and avg_chord for this wing
-                        span, avg_chord = wing_geometry_info[wing_id]
-
-                        # Calculate number of cross sections needed
-                        cache_key = (ar_id, chord_id, wing_id)
-                        if cache_key in num_cross_sections_cache:
-                            num_sections = num_cross_sections_cache[cache_key]
-                        else:
-                            num_sections = _get_num_cross_sections_for_panel_ar(
-                                span,
-                                avg_chord,
-                                panel_aspect_ratio,
-                                num_chordwise_panels,
-                            )
-                            num_cross_sections_cache[cache_key] = num_sections
-
-                        convergence_logger.debug(
-                            f"\t\t\t\t\t\tWing {wing_id}: {num_sections} sections"
-                        )
-
-                        # Get resampled geometry (with caching)
-                        geom_cache_key = (wing_id, num_sections)
-                        if geom_cache_key in geometry_cache:
-                            wing_section_data = geometry_cache[geom_cache_key]
-                        else:
-                            wing_section_data = wing_geometry_resampler(
-                                wing_id, num_sections
-                            )
-                            geometry_cache[geom_cache_key] = wing_section_data
-
-                        # Create WingCrossSections
-                        these_base_wcs: list[
-                            geometry.wing_cross_section.WingCrossSection
-                        ] = []
-                        these_wcs_movements: list[
-                            movements.wing_cross_section_movement.WingCrossSectionMovement
-                        ] = []
-                        num_wcs = num_sections + 1
-
-                        for wcs_id in range(num_wcs):
-                            this_num_spanwise_panels: int | None = (
-                                1 if wcs_id < num_sections else None
-                            )
-
-                            # Get reference WCS for non-geometry properties
-                            ref_wcs_movement = (
-                                ref_wing_movement.wing_cross_section_movements[
-                                    0 if wcs_id == 0 else -1
-                                ]
-                            )
-                            ref_base_wcs = ref_wcs_movement.base_wing_cross_section
-
-                            this_base_wcs = geometry.wing_cross_section.WingCrossSection(
-                                Lp_Wcsp_Lpp=tuple(wing_section_data[wcs_id, :3]),
-                                chord=float(wing_section_data[wcs_id, 3]),
-                                num_spanwise_panels=this_num_spanwise_panels,
-                                angles_Wcsp_to_Wcs_ixyz=ref_base_wcs.angles_Wcsp_to_Wcs_ixyz,
-                                airfoil=geometry.airfoil.Airfoil(
-                                    name=ref_base_wcs.airfoil.name,
-                                    outline_A_lp=ref_base_wcs.airfoil.outline_A_lp,
-                                    resample=ref_base_wcs.airfoil.resample,
-                                    n_points_per_side=ref_base_wcs.airfoil.n_points_per_side,
-                                ),
-                                control_surface_symmetry_type=ref_base_wcs.control_surface_symmetry_type,
-                                control_surface_hinge_point=ref_base_wcs.control_surface_hinge_point,
-                                control_surface_deflection=ref_base_wcs.control_surface_deflection,
-                                spanwise_spacing=ref_base_wcs.spanwise_spacing,
-                            )
-                            these_base_wcs.append(this_base_wcs)
-
-                            # Create WingCrossSectionMovement (no individual motion)
-                            this_wcs_movement = movements.wing_cross_section_movement.WingCrossSectionMovement(
-                                base_wing_cross_section=this_base_wcs,
-                            )
-                            these_wcs_movements.append(this_wcs_movement)
-
-                        # Create Wing
-                        this_base_wing = geometry.wing.Wing(
-                            wing_cross_sections=these_base_wcs,
-                            num_chordwise_panels=num_chordwise_panels,
-                            name=ref_base_wing.name,
-                            Ler_Gs_Cgs=ref_base_wing.Ler_Gs_Cgs,
-                            angles_Gs_to_Wn_ixyz=ref_base_wing.angles_Gs_to_Wn_ixyz,
-                            symmetric=ref_base_wing.symmetric,
-                            mirror_only=ref_base_wing.mirror_only,
-                            symmetryNormal_G=ref_base_wing.symmetryNormal_G,
-                            symmetryPoint_G_Cg=ref_base_wing.symmetryPoint_G_Cg,
-                            chordwise_spacing=ref_base_wing.chordwise_spacing,
-                        )
-                        these_base_wings.append(this_base_wing)
-
-                        # Create WingMovement
-                        this_wing_movement = movements.wing_movement.WingMovement(
-                            base_wing=this_base_wing,
-                            wing_cross_section_movements=these_wcs_movements,
-                            rotationPointOffset_Gs_Ler=ref_wing_movement.rotationPointOffset_Gs_Ler,
-                            ampLer_Gs_Cgs=ref_wing_movement.ampLer_Gs_Cgs,
-                            periodLer_Gs_Cgs=ref_wing_movement.periodLer_Gs_Cgs,
-                            spacingLer_Gs_Cgs=ref_wing_movement.spacingLer_Gs_Cgs,
-                            phaseLer_Gs_Cgs=ref_wing_movement.phaseLer_Gs_Cgs,
-                            ampAngles_Gs_to_Wn_ixyz=ref_wing_movement.ampAngles_Gs_to_Wn_ixyz,
-                            periodAngles_Gs_to_Wn_ixyz=ref_wing_movement.periodAngles_Gs_to_Wn_ixyz,
-                            spacingAngles_Gs_to_Wn_ixyz=ref_wing_movement.spacingAngles_Gs_to_Wn_ixyz,
-                            phaseAngles_Gs_to_Wn_ixyz=ref_wing_movement.phaseAngles_Gs_to_Wn_ixyz,
-                        )
-                        these_wing_movements.append(this_wing_movement)
-
-                    # Create Airplane
-                    ref_base_airplane = ref_airplane_movement.base_airplane
-                    this_base_airplane = geometry.airplane.Airplane(
-                        wings=these_base_wings,
-                        name=ref_base_airplane.name,
-                        Cg_GP1_CgP1=ref_base_airplane.Cg_GP1_CgP1,
-                        weight=ref_base_airplane.weight,
-                        s_ref=None,
-                        c_ref=None,
-                        b_ref=None,
-                    )
-
-                    # ----------------------------------------------------------
-                    # OPTIONAL: VISUALIZE MESH
-                    # ----------------------------------------------------------
-
-                    if visualize_meshes:
-                        ar_ok, actual_ar = _verify_panel_aspect_ratio(
-                            this_base_airplane, panel_aspect_ratio
-                        )
+                    for chord_id, num_chordwise_panels in enumerate(
+                        num_chordwise_panels_list
+                    ):
                         convergence_logger.info(
-                            f"\t\t\t\t\t\tTarget AR: {panel_aspect_ratio}, "
-                            f"Actual AR: {actual_ar:.2f}, OK: {ar_ok}"
+                            "\t\t\t\t\tChordwise Panels: " + str(num_chordwise_panels)
                         )
 
-                        vis_filename = f"mesh_ar{panel_aspect_ratio}_chord{num_chordwise_panels}.png"
-
-                        assert visualization_dir is not None
-                        vis_path = Path(visualization_dir) / vis_filename
-                        _visualize_wing_mesh(
-                            this_base_airplane,
-                            title=f"AR={panel_aspect_ratio}, Chordwise={num_chordwise_panels}",
-                            show=False,
-                            save_path=str(vis_path),
+                        iteration += 1
+                        convergence_logger.info(
+                            f"\t\t\t\t\t\tIteration {iteration}/{num_iterations}"
                         )
 
-                    # ----------------------------------------------------------
-                    # CREATE MOVEMENT AND PROBLEM
-                    # ----------------------------------------------------------
+                        # ------------------------------------------------------
+                        # BUILD GEOMETRY FOR THIS ITERATION
+                        # ------------------------------------------------------
 
-                    this_airplane_movement = (
-                        movements.airplane_movement.AirplaneMovement(
+                        these_base_wings = []
+                        these_wing_movements = []
+
+                        for wing_id in range(num_wings):
+                            ref_wing_movement = ref_airplane_movement.wing_movements[
+                                wing_id
+                            ]
+                            ref_base_wing = ref_wing_movement.base_wing
+
+                            # Get span and avg_chord for this wing
+                            span, avg_chord = wing_geometry_info[wing_id]
+
+                            # Calculate number of cross sections needed
+                            cache_key = (ar_id, chord_id, wing_id)
+                            if cache_key in num_cross_sections_cache:
+                                num_sections = num_cross_sections_cache[cache_key]
+                            else:
+                                num_sections = _get_num_cross_sections_for_panel_ar(
+                                    span,
+                                    avg_chord,
+                                    panel_aspect_ratio,
+                                    num_chordwise_panels,
+                                )
+                                num_cross_sections_cache[cache_key] = num_sections
+
+                            convergence_logger.debug(
+                                f"\t\t\t\t\t\t\tWing {wing_id}: {num_sections} sections"
+                            )
+
+                            # Get resampled geometry (with caching)
+                            geom_cache_key = (wing_id, num_sections)
+                            if geom_cache_key in geometry_cache:
+                                wing_section_data = geometry_cache[geom_cache_key]
+                            else:
+                                wing_section_data = wing_geometry_resampler(
+                                    wing_id, num_sections
+                                )
+                                geometry_cache[geom_cache_key] = wing_section_data
+
+                            # Create WingCrossSections
+                            these_base_wcs: list[
+                                geometry.wing_cross_section.WingCrossSection
+                            ] = []
+                            these_wcs_movements: list[
+                                movements.wing_cross_section_movement.WingCrossSectionMovement
+                            ] = []
+                            num_wcs = num_sections + 1
+
+                            for wcs_id in range(num_wcs):
+                                this_num_spanwise_panels: int | None = (
+                                    1 if wcs_id < num_sections else None
+                                )
+
+                                # Get reference WCS for non-geometry properties
+                                ref_wcs_movement = (
+                                    ref_wing_movement.wing_cross_section_movements[
+                                        0 if wcs_id == 0 else -1
+                                    ]
+                                )
+                                ref_base_wcs = ref_wcs_movement.base_wing_cross_section
+
+                                this_base_wcs = geometry.wing_cross_section.WingCrossSection(
+                                    Lp_Wcsp_Lpp=tuple(wing_section_data[wcs_id, :3]),
+                                    chord=float(wing_section_data[wcs_id, 3]),
+                                    num_spanwise_panels=this_num_spanwise_panels,
+                                    angles_Wcsp_to_Wcs_ixyz=ref_base_wcs.angles_Wcsp_to_Wcs_ixyz,
+                                    airfoil=geometry.airfoil.Airfoil(
+                                        name=ref_base_wcs.airfoil.name,
+                                        outline_A_lp=ref_base_wcs.airfoil.outline_A_lp,
+                                        resample=ref_base_wcs.airfoil.resample,
+                                        n_points_per_side=ref_base_wcs.airfoil.n_points_per_side,
+                                    ),
+                                    control_surface_symmetry_type=ref_base_wcs.control_surface_symmetry_type,
+                                    control_surface_hinge_point=ref_base_wcs.control_surface_hinge_point,
+                                    control_surface_deflection=ref_base_wcs.control_surface_deflection,
+                                    spanwise_spacing=ref_base_wcs.spanwise_spacing,
+                                )
+                                these_base_wcs.append(this_base_wcs)
+
+                                # Create WingCrossSectionMovement (no individual motion)
+                                this_wcs_movement = movements.wing_cross_section_movement.WingCrossSectionMovement(
+                                    base_wing_cross_section=this_base_wcs,
+                                )
+                                these_wcs_movements.append(this_wcs_movement)
+
+                            # Create Wing
+                            this_base_wing = geometry.wing.Wing(
+                                wing_cross_sections=these_base_wcs,
+                                num_chordwise_panels=num_chordwise_panels,
+                                name=ref_base_wing.name,
+                                Ler_Gs_Cgs=ref_base_wing.Ler_Gs_Cgs,
+                                angles_Gs_to_Wn_ixyz=ref_base_wing.angles_Gs_to_Wn_ixyz,
+                                symmetric=ref_base_wing.symmetric,
+                                mirror_only=ref_base_wing.mirror_only,
+                                symmetryNormal_G=ref_base_wing.symmetryNormal_G,
+                                symmetryPoint_G_Cg=ref_base_wing.symmetryPoint_G_Cg,
+                                chordwise_spacing=ref_base_wing.chordwise_spacing,
+                            )
+                            these_base_wings.append(this_base_wing)
+
+                            # Create WingMovement
+                            this_wing_movement = movements.wing_movement.WingMovement(
+                                base_wing=this_base_wing,
+                                wing_cross_section_movements=these_wcs_movements,
+                                rotationPointOffset_Gs_Ler=ref_wing_movement.rotationPointOffset_Gs_Ler,
+                                ampLer_Gs_Cgs=ref_wing_movement.ampLer_Gs_Cgs,
+                                periodLer_Gs_Cgs=ref_wing_movement.periodLer_Gs_Cgs,
+                                spacingLer_Gs_Cgs=ref_wing_movement.spacingLer_Gs_Cgs,
+                                phaseLer_Gs_Cgs=ref_wing_movement.phaseLer_Gs_Cgs,
+                                ampAngles_Gs_to_Wn_ixyz=ref_wing_movement.ampAngles_Gs_to_Wn_ixyz,
+                                periodAngles_Gs_to_Wn_ixyz=ref_wing_movement.periodAngles_Gs_to_Wn_ixyz,
+                                spacingAngles_Gs_to_Wn_ixyz=ref_wing_movement.spacingAngles_Gs_to_Wn_ixyz,
+                                phaseAngles_Gs_to_Wn_ixyz=ref_wing_movement.phaseAngles_Gs_to_Wn_ixyz,
+                            )
+                            these_wing_movements.append(this_wing_movement)
+
+                        # Create Airplane
+                        ref_base_airplane = ref_airplane_movement.base_airplane
+                        this_base_airplane = geometry.airplane.Airplane(
+                            wings=these_base_wings,
+                            name=ref_base_airplane.name,
+                            Cg_GP1_CgP1=ref_base_airplane.Cg_GP1_CgP1,
+                            weight=ref_base_airplane.weight,
+                            s_ref=None,
+                            c_ref=None,
+                            b_ref=None,
+                        )
+
+                        # ------------------------------------------------------
+                        # OPTIONAL: VISUALIZE MESH
+                        # ------------------------------------------------------
+
+                        if visualize_meshes:
+                            ar_ok, actual_ar = _verify_panel_aspect_ratio(
+                                this_base_airplane, panel_aspect_ratio
+                            )
+                            convergence_logger.info(
+                                f"\t\t\t\t\t\t\tTarget AR: {panel_aspect_ratio}, "
+                                f"Actual AR: {actual_ar:.2f}, OK: {ar_ok}"
+                            )
+
+                            vis_filename = f"mesh_ar{panel_aspect_ratio}_chord{num_chordwise_panels}.png"
+
+                            assert visualization_dir is not None
+                            vis_path = Path(visualization_dir) / vis_filename
+                            _visualize_wing_mesh(
+                                this_base_airplane,
+                                title=f"AR={panel_aspect_ratio}, Chordwise={num_chordwise_panels}",
+                                show=False,
+                                save_path=str(vis_path),
+                            )
+
+                        # ------------------------------------------------------
+                        # CREATE MOVEMENT AND PROBLEM
+                        # ------------------------------------------------------
+
+                        this_airplane_movement = movements.airplane_movement.AirplaneMovement(
                             base_airplane=this_base_airplane,
                             wing_movements=these_wing_movements,
                             ampCg_GP1_CgP1=ref_airplane_movement.ampCg_GP1_CgP1,
@@ -2765,339 +2811,444 @@ def analyze_unsteady_convergence_non_trapezoidal(
                             spacingCg_GP1_CgP1=ref_airplane_movement.spacingCg_GP1_CgP1,
                             phaseCg_GP1_CgP1=ref_airplane_movement.phaseCg_GP1_CgP1,
                         )
-                    )
 
-                    if static:
-                        this_movement = movements.movement.Movement(
-                            airplane_movements=[this_airplane_movement],
-                            operating_point_movement=ref_operating_point_movement,
-                            num_chords=wake_length,
-                            delta_time=delta_time,
-                        )
-                    else:
-                        this_movement = movements.movement.Movement(
-                            airplane_movements=[this_airplane_movement],
-                            operating_point_movement=ref_operating_point_movement,
-                            num_cycles=wake_length,
-                            delta_time=delta_time,
-                        )
-
-                    this_problem = problems.UnsteadyProblem(
-                        movement=this_movement,
-                        only_final_results=True,
-                    )
-
-                    # ----------------------------------------------------------
-                    # RUN SOLVER
-                    # ----------------------------------------------------------
-
-                    this_solver = unsteady_ring_vortex_lattice_method.UnsteadyRingVortexLatticeMethodSolver(
-                        unsteady_problem=this_problem
-                    )
-
-                    convergence_logger.info("\t\t\t\t\t\tStarting simulation...")
-
-                    iter_start = time.time()
-                    this_solver.run(
-                        prescribed_wake=wake,
-                        calculate_streamlines=False,
-                        show_progress=show_solver_progress,
-                    )
-                    iter_stop = time.time()
-                    this_iter_time = iter_stop - iter_start
-
-                    convergence_logger.info(
-                        f"\t\t\t\t\t\tSimulation completed in {this_iter_time:.3f} s"
-                    )
-
-                    # ----------------------------------------------------------
-                    # EXTRACT AND STORE RESULTS
-                    # ----------------------------------------------------------
-
-                    theseCombinedFinalLoadCoefficients = np.zeros((1, 2), dtype=float)
-
-                    if static:
-                        combinedFinalForceCoefficient = np.linalg.norm(
-                            this_problem.finalForceCoefficients_W[0]
-                        )
-                        combinedFinalMomentCoefficient = np.linalg.norm(
-                            this_problem.finalMomentCoefficients_W_CgP1[0]
-                        )
-                    else:
-                        combinedFinalForceCoefficient = np.linalg.norm(
-                            this_problem.finalRmsForceCoefficients_W[0]
-                        )
-                        combinedFinalMomentCoefficient = np.linalg.norm(
-                            this_problem.finalRmsMomentCoefficients_W_CgP1[0]
-                        )
-
-                    theseCombinedFinalLoadCoefficients[0, 0] = (
-                        combinedFinalForceCoefficient
-                    )
-                    theseCombinedFinalLoadCoefficients[0, 1] = (
-                        combinedFinalMomentCoefficient
-                    )
-
-                    combinedFinalLoadCoefficients[
-                        wake_id, length_id, ar_id, chord_id, :, :
-                    ] = theseCombinedFinalLoadCoefficients
-                    iter_times[wake_id, length_id, ar_id, chord_id] = this_iter_time
-
-                    # ----------------------------------------------------------
-                    # CHECK CONVERGENCE
-                    # ----------------------------------------------------------
-
-                    max_wake_pc = np.inf
-                    max_length_pc = np.inf
-                    max_ar_pc = np.inf
-                    max_chord_pc = np.inf
-
-                    # Wake state APE
-                    if wake_id > 0:
-                        lastWakeCombinedFinalLoadCoefficients = (
-                            combinedFinalLoadCoefficients[
-                                wake_id - 1, length_id, ar_id, chord_id, :, :
-                            ]
-                        )
-                        max_wake_pc = np.max(
-                            100
-                            * np.abs(
-                                (
-                                    theseCombinedFinalLoadCoefficients
-                                    - lastWakeCombinedFinalLoadCoefficients
-                                )
-                                / lastWakeCombinedFinalLoadCoefficients
+                        if static:
+                            this_movement = movements.movement.Movement(
+                                airplane_movements=[this_airplane_movement],
+                                operating_point_movement=ref_operating_point_movement,
+                                num_chords=wake_length,
+                                delta_time=this_delta_time,
                             )
-                        )
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from wake type: "
-                            + str(round(max_wake_pc, 2))
-                            + "%"
-                        )
-                    else:
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from wake type: "
-                            + str(max_wake_pc)
-                        )
-
-                    # Wake length APE
-                    if length_id > 0:
-                        lastLengthCombinedFinalLoadCoefficients = (
-                            combinedFinalLoadCoefficients[
-                                wake_id, length_id - 1, ar_id, chord_id, :, :
-                            ]
-                        )
-                        max_length_pc = np.max(
-                            100
-                            * np.abs(
-                                (
-                                    theseCombinedFinalLoadCoefficients
-                                    - lastLengthCombinedFinalLoadCoefficients
-                                )
-                                / lastLengthCombinedFinalLoadCoefficients
-                            )
-                        )
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from wake length: "
-                            + str(round(max_length_pc, 2))
-                            + "%"
-                        )
-                    else:
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from wake length: "
-                            + str(max_length_pc)
-                        )
-
-                    # Panel aspect ratio APE
-                    if ar_id > 0:
-                        lastArCombinedFinalLoadCoefficients = (
-                            combinedFinalLoadCoefficients[
-                                wake_id, length_id, ar_id - 1, chord_id, :, :
-                            ]
-                        )
-                        max_ar_pc = np.max(
-                            100
-                            * np.abs(
-                                (
-                                    theseCombinedFinalLoadCoefficients
-                                    - lastArCombinedFinalLoadCoefficients
-                                )
-                                / lastArCombinedFinalLoadCoefficients
-                            )
-                        )
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from Panel AR: "
-                            + str(round(max_ar_pc, 2))
-                            + "%"
-                        )
-                    else:
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from Panel AR: "
-                            + str(max_ar_pc)
-                        )
-
-                    # Chordwise panels APE
-                    if chord_id > 0:
-                        lastChordCombinedFinalLoadCoefficients = (
-                            combinedFinalLoadCoefficients[
-                                wake_id, length_id, ar_id, chord_id - 1, :, :
-                            ]
-                        )
-                        max_chord_pc = np.max(
-                            100
-                            * np.abs(
-                                (
-                                    theseCombinedFinalLoadCoefficients
-                                    - lastChordCombinedFinalLoadCoefficients
-                                )
-                                / lastChordCombinedFinalLoadCoefficients
-                            )
-                        )
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from chordwise Panels: "
-                            + str(round(max_chord_pc, 2))
-                            + "%"
-                        )
-                    else:
-                        convergence_logger.info(
-                            "\t\t\t\t\t\tMax coefficient change from chordwise Panels: "
-                            + str(max_chord_pc)
-                        )
-
-                    # Check convergence conditions
-                    wake_saturated = not wake
-                    ar_saturated = panel_aspect_ratio == 1
-
-                    single_wake = len(wake_list) == 1
-                    single_length = len(wake_lengths_list) == 1
-                    single_ar = len(panel_aspect_ratios_list) == 1
-                    single_chord = len(num_chordwise_panels_list) == 1
-
-                    wake_converged = max_wake_pc < convergence_criteria
-                    length_converged = max_length_pc < convergence_criteria
-                    ar_converged = max_ar_pc < convergence_criteria
-                    chord_converged = max_chord_pc < convergence_criteria
-
-                    wake_passed = wake_converged or single_wake or wake_saturated
-                    length_passed = length_converged or single_length
-                    ar_passed = ar_converged or single_ar or ar_saturated
-                    chord_passed = chord_converged or single_chord
-
-                    # If all passed, return converged parameters
-                    if wake_passed and length_passed and ar_passed and chord_passed:
-                        if single_wake:
-                            converged_wake_id = wake_id
                         else:
-                            if wake_converged:
+                            this_movement = movements.movement.Movement(
+                                airplane_movements=[this_airplane_movement],
+                                operating_point_movement=ref_operating_point_movement,
+                                num_cycles=wake_length,
+                                delta_time=this_delta_time,
+                            )
+
+                        this_problem = problems.UnsteadyProblem(
+                            movement=this_movement,
+                            only_final_results=True,
+                        )
+
+                        # ------------------------------------------------------
+                        # RUN SOLVER
+                        # ------------------------------------------------------
+
+                        this_solver = unsteady_ring_vortex_lattice_method.UnsteadyRingVortexLatticeMethodSolver(
+                            unsteady_problem=this_problem
+                        )
+
+                        convergence_logger.info("\t\t\t\t\t\t\tStarting simulation...")
+
+                        iter_start = time.time()
+                        this_solver.run(
+                            prescribed_wake=wake,
+                            calculate_streamlines=False,
+                            show_progress=show_solver_progress,
+                        )
+                        iter_stop = time.time()
+                        this_iter_time = iter_stop - iter_start
+
+                        convergence_logger.info(
+                            f"\t\t\t\t\t\t\tSimulation completed in "
+                            f"{this_iter_time:.3f} s"
+                        )
+
+                        # ------------------------------------------------------
+                        # EXTRACT AND STORE RESULTS
+                        # ------------------------------------------------------
+
+                        theseCombinedFinalLoadCoefficients = np.zeros(
+                            (1, 2), dtype=float
+                        )
+
+                        if static:
+                            combinedFinalForceCoefficient = np.linalg.norm(
+                                this_problem.finalForceCoefficients_W[0]
+                            )
+                            combinedFinalMomentCoefficient = np.linalg.norm(
+                                this_problem.finalMomentCoefficients_W_CgP1[0]
+                            )
+                        else:
+                            combinedFinalForceCoefficient = np.linalg.norm(
+                                this_problem.finalRmsForceCoefficients_W[0]
+                            )
+                            combinedFinalMomentCoefficient = np.linalg.norm(
+                                this_problem.finalRmsMomentCoefficients_W_CgP1[0]
+                            )
+
+                        theseCombinedFinalLoadCoefficients[0, 0] = (
+                            combinedFinalForceCoefficient
+                        )
+                        theseCombinedFinalLoadCoefficients[0, 1] = (
+                            combinedFinalMomentCoefficient
+                        )
+
+                        combinedFinalLoadCoefficients[
+                            dt_id, wake_id, length_id, ar_id, chord_id, :, :
+                        ] = theseCombinedFinalLoadCoefficients
+                        iter_times[dt_id, wake_id, length_id, ar_id, chord_id] = (
+                            this_iter_time
+                        )
+
+                        # ------------------------------------------------------
+                        # CHECK CONVERGENCE
+                        # ------------------------------------------------------
+
+                        max_dt_pc = np.inf
+                        max_wake_pc = np.inf
+                        max_length_pc = np.inf
+                        max_ar_pc = np.inf
+                        max_chord_pc = np.inf
+
+                        # Delta time APE
+                        if dt_id > 0:
+                            lastDtCombinedFinalLoadCoefficients = (
+                                combinedFinalLoadCoefficients[
+                                    dt_id - 1,
+                                    wake_id,
+                                    length_id,
+                                    ar_id,
+                                    chord_id,
+                                    :,
+                                    :,
+                                ]
+                            )
+                            max_dt_pc = np.max(
+                                100
+                                * np.abs(
+                                    (
+                                        theseCombinedFinalLoadCoefficients
+                                        - lastDtCombinedFinalLoadCoefficients
+                                    )
+                                    / lastDtCombinedFinalLoadCoefficients
+                                )
+                            )
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"delta time: {round(max_dt_pc, 2)}%"
+                            )
+                        else:
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"delta time: {max_dt_pc}"
+                            )
+
+                        # Wake state APE
+                        if wake_id > 0:
+                            lastWakeCombinedFinalLoadCoefficients = (
+                                combinedFinalLoadCoefficients[
+                                    dt_id,
+                                    wake_id - 1,
+                                    length_id,
+                                    ar_id,
+                                    chord_id,
+                                    :,
+                                    :,
+                                ]
+                            )
+                            max_wake_pc = np.max(
+                                100
+                                * np.abs(
+                                    (
+                                        theseCombinedFinalLoadCoefficients
+                                        - lastWakeCombinedFinalLoadCoefficients
+                                    )
+                                    / lastWakeCombinedFinalLoadCoefficients
+                                )
+                            )
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"wake type: {round(max_wake_pc, 2)}%"
+                            )
+                        else:
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"wake type: {max_wake_pc}"
+                            )
+
+                        # Wake length APE
+                        if length_id > 0:
+                            lastLengthCombinedFinalLoadCoefficients = (
+                                combinedFinalLoadCoefficients[
+                                    dt_id,
+                                    wake_id,
+                                    length_id - 1,
+                                    ar_id,
+                                    chord_id,
+                                    :,
+                                    :,
+                                ]
+                            )
+                            max_length_pc = np.max(
+                                100
+                                * np.abs(
+                                    (
+                                        theseCombinedFinalLoadCoefficients
+                                        - lastLengthCombinedFinalLoadCoefficients
+                                    )
+                                    / lastLengthCombinedFinalLoadCoefficients
+                                )
+                            )
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"wake length: {round(max_length_pc, 2)}%"
+                            )
+                        else:
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"wake length: {max_length_pc}"
+                            )
+
+                        # Panel aspect ratio APE
+                        if ar_id > 0:
+                            lastArCombinedFinalLoadCoefficients = (
+                                combinedFinalLoadCoefficients[
+                                    dt_id,
+                                    wake_id,
+                                    length_id,
+                                    ar_id - 1,
+                                    chord_id,
+                                    :,
+                                    :,
+                                ]
+                            )
+                            max_ar_pc = np.max(
+                                100
+                                * np.abs(
+                                    (
+                                        theseCombinedFinalLoadCoefficients
+                                        - lastArCombinedFinalLoadCoefficients
+                                    )
+                                    / lastArCombinedFinalLoadCoefficients
+                                )
+                            )
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"Panel AR: {round(max_ar_pc, 2)}%"
+                            )
+                        else:
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"Panel AR: {max_ar_pc}"
+                            )
+
+                        # Chordwise panels APE
+                        if chord_id > 0:
+                            lastChordCombinedFinalLoadCoefficients = (
+                                combinedFinalLoadCoefficients[
+                                    dt_id,
+                                    wake_id,
+                                    length_id,
+                                    ar_id,
+                                    chord_id - 1,
+                                    :,
+                                    :,
+                                ]
+                            )
+                            max_chord_pc = np.max(
+                                100
+                                * np.abs(
+                                    (
+                                        theseCombinedFinalLoadCoefficients
+                                        - lastChordCombinedFinalLoadCoefficients
+                                    )
+                                    / lastChordCombinedFinalLoadCoefficients
+                                )
+                            )
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"chordwise Panels: {round(max_chord_pc, 2)}%"
+                            )
+                        else:
+                            convergence_logger.info(
+                                "\t\t\t\t\t\t\tMax coefficient change from "
+                                f"chordwise Panels: {max_chord_pc}"
+                            )
+
+                        # Check convergence conditions
+                        dt_saturated = (
+                            delta_time_bounds is not None
+                            and this_delta_time == delta_time_bounds[1]
+                        )
+                        wake_saturated = not wake
+                        ar_saturated = panel_aspect_ratio == 1
+
+                        single_dt = len(delta_time_list) == 1
+                        single_wake = len(wake_list) == 1
+                        single_length = len(wake_lengths_list) == 1
+                        single_ar = len(panel_aspect_ratios_list) == 1
+                        single_chord = len(num_chordwise_panels_list) == 1
+
+                        dt_converged = max_dt_pc < convergence_criteria
+                        wake_converged = max_wake_pc < convergence_criteria
+                        length_converged = max_length_pc < convergence_criteria
+                        ar_converged = max_ar_pc < convergence_criteria
+                        chord_converged = max_chord_pc < convergence_criteria
+
+                        dt_passed = dt_converged or single_dt or dt_saturated
+                        wake_passed = wake_converged or single_wake or wake_saturated
+                        length_passed = length_converged or single_length
+                        ar_passed = ar_converged or single_ar or ar_saturated
+                        chord_passed = chord_converged or single_chord
+
+                        # If all passed, return converged parameters
+                        if (
+                            dt_passed
+                            and wake_passed
+                            and length_passed
+                            and ar_passed
+                            and chord_passed
+                        ):
+                            # Determine converged_dt_id
+                            if single_dt:
+                                converged_dt_id = dt_id
+                            elif dt_converged:
+                                converged_dt_id = dt_id - 1
+                            else:
+                                converged_dt_id = dt_id
+
+                            if single_wake:
+                                converged_wake_id = wake_id
+                            elif wake_converged:
                                 converged_wake_id = wake_id - 1
                             else:
                                 converged_wake_id = wake_id
 
-                        if single_length:
-                            converged_length_id = length_id
-                        else:
-                            converged_length_id = length_id - 1
+                            if single_length:
+                                converged_length_id = length_id
+                            else:
+                                converged_length_id = length_id - 1
 
-                        if single_ar:
-                            converged_ar_id = ar_id
-                        else:
-                            if ar_converged:
+                            if single_ar:
+                                converged_ar_id = ar_id
+                            elif ar_converged:
                                 converged_ar_id = ar_id - 1
                             else:
                                 converged_ar_id = ar_id
 
-                        if single_chord:
-                            converged_chord_id = chord_id
-                        else:
-                            converged_chord_id = chord_id - 1
-
-                        converged_wake = wake_list[converged_wake_id]
-                        converged_wake_length = wake_lengths_list[converged_length_id]
-                        converged_chordwise_panels = num_chordwise_panels_list[
-                            converged_chord_id
-                        ]
-                        converged_aspect_ratio = panel_aspect_ratios_list[
-                            converged_ar_id
-                        ]
-                        converged_iter_time = float(
-                            iter_times[
-                                converged_wake_id,
-                                converged_length_id,
-                                converged_ar_id,
-                                converged_chord_id,
-                            ]
-                        )
-
-                        # Log results
-                        if single_wake or single_length or single_ar or single_chord:
-                            convergence_logger.info(
-                                "The analysis found a semi-converged case:"
-                            )
-                            if single_wake:
-                                convergence_logger.warning(
-                                    "Wake type convergence not checked"
-                                )
-                            if single_length:
-                                convergence_logger.warning(
-                                    "Wake length convergence not checked"
-                                )
-                            if single_ar:
-                                convergence_logger.warning(
-                                    "Panel aspect ratio convergence not checked"
-                                )
                             if single_chord:
-                                convergence_logger.warning(
-                                    "Chordwise Panels convergence not checked"
+                                converged_chord_id = chord_id
+                            else:
+                                converged_chord_id = chord_id - 1
+
+                            converged_delta_time = delta_time_list[converged_dt_id]
+                            converged_wake = wake_list[converged_wake_id]
+                            converged_wake_length = wake_lengths_list[
+                                converged_length_id
+                            ]
+                            converged_chordwise_panels = num_chordwise_panels_list[
+                                converged_chord_id
+                            ]
+                            converged_aspect_ratio = panel_aspect_ratios_list[
+                                converged_ar_id
+                            ]
+                            converged_iter_time = float(
+                                iter_times[
+                                    converged_dt_id,
+                                    converged_wake_id,
+                                    converged_length_id,
+                                    converged_ar_id,
+                                    converged_chord_id,
+                                ]
+                            )
+
+                            # Log results
+                            if (
+                                single_dt
+                                or single_wake
+                                or single_length
+                                or single_ar
+                                or single_chord
+                            ):
+                                convergence_logger.info(
+                                    "The analysis found a semi-converged case:"
                                 )
-                        else:
+                                if single_dt:
+                                    convergence_logger.warning(
+                                        "Delta time convergence not checked"
+                                    )
+                                if single_wake:
+                                    convergence_logger.warning(
+                                        "Wake type convergence not checked"
+                                    )
+                                if single_length:
+                                    convergence_logger.warning(
+                                        "Wake length convergence not checked"
+                                    )
+                                if single_ar:
+                                    convergence_logger.warning(
+                                        "Panel aspect ratio convergence not checked"
+                                    )
+                                if single_chord:
+                                    convergence_logger.warning(
+                                        "Chordwise Panels convergence not checked"
+                                    )
+                            else:
+                                convergence_logger.info(
+                                    "The analysis found a converged case:"
+                                )
+
+                            if converged_delta_time is not None:
+                                convergence_logger.info(
+                                    f"\tDelta time: {converged_delta_time:.6f} s"
+                                )
+                            else:
+                                convergence_logger.info("\tDelta time: auto-calculated")
+
+                            if converged_wake:
+                                convergence_logger.info("\tWake type: prescribed")
+                            else:
+                                convergence_logger.info("\tWake type: free")
+
+                            if static:
+                                convergence_logger.info(
+                                    "\tChord lengths: " + str(converged_wake_length)
+                                )
+                            else:
+                                convergence_logger.info(
+                                    "\tCycles: " + str(converged_wake_length)
+                                )
+
                             convergence_logger.info(
-                                "The analysis found a converged case:"
+                                "\tPanel aspect ratio: " + str(converged_aspect_ratio)
+                            )
+                            convergence_logger.info(
+                                "\tChordwise Panels: " + str(converged_chordwise_panels)
+                            )
+                            convergence_logger.info(
+                                "\tSimulation completed in "
+                                + str(round(converged_iter_time, 3))
+                                + " s"
                             )
 
-                        if converged_wake:
-                            convergence_logger.info("\tWake type: prescribed")
-                        else:
-                            convergence_logger.info("\tWake type: free")
+                            # Log spanwise sections for each wing
+                            convergence_logger.info("\tSpanwise sections per wing:")
+                            for wing_id in range(num_wings):
+                                cache_key = (
+                                    converged_ar_id,
+                                    converged_chord_id,
+                                    wing_id,
+                                )
+                                num_sections = num_cross_sections_cache.get(
+                                    cache_key, 0
+                                )
+                                convergence_logger.info(
+                                    f"\t\tWing {wing_id}: {num_sections} sections"
+                                )
 
-                        if static:
-                            convergence_logger.info(
-                                "\tChord lengths: " + str(converged_wake_length)
+                            return (
+                                converged_delta_time,
+                                converged_wake,
+                                converged_wake_length,
+                                converged_aspect_ratio,
+                                converged_chordwise_panels,
                             )
-                        else:
-                            convergence_logger.info(
-                                "\tCycles: " + str(converged_wake_length)
-                            )
-
-                        convergence_logger.info(
-                            "\tPanel aspect ratio: " + str(converged_aspect_ratio)
-                        )
-                        convergence_logger.info(
-                            "\tChordwise Panels: " + str(converged_chordwise_panels)
-                        )
-                        convergence_logger.info(
-                            "\tSimulation completed in "
-                            + str(round(converged_iter_time, 3))
-                            + " s"
-                        )
-
-                        # Log spanwise sections for each wing
-                        convergence_logger.info("\tSpanwise sections per wing:")
-                        for wing_id in range(num_wings):
-                            cache_key = (converged_ar_id, converged_chord_id, wing_id)
-                            num_sections = num_cross_sections_cache.get(cache_key, 0)
-                            convergence_logger.info(
-                                f"\t\tWing {wing_id}: {num_sections} sections"
-                            )
-
-                        return (
-                            converged_wake,
-                            converged_wake_length,
-                            converged_aspect_ratio,
-                            converged_chordwise_panels,
-                        )
 
     # No convergence found
     convergence_logger.info(
         "The analysis did not find a converged case within the given bounds"
     )
-    return None, None, None, None
+    return None, None, None, None, None
