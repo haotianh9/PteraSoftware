@@ -301,14 +301,12 @@ def run_convergence_analysis(
         wing_geometry_resampler=resampler,
         prescribed_wake=True,
         free_wake=True,
+        delta_time_bounds=(1 / 170 / 10, 1 / 170 / 20),
         num_cycles_bounds=(2 - 1, 2 + 3),
         panel_aspect_ratio_bounds=(1 + 3, 1 - 0),
         num_chordwise_panels_bounds=(8 - 3, 8 + 3),
-        convergence_criteria=5.0,
-        show_solver_progress=True,
         visualize_meshes=visualize,
         visualization_dir=vis_dir,
-        delta_time=1 / 170 / 30,
     )
 
     # Print results
@@ -318,7 +316,13 @@ def run_convergence_analysis(
     print("=" * 60)
 
     if result[0] is not None:
-        converged_wake, converged_cycles, converged_ar, converged_chordwise = result
+        (
+            converged_delta_time,
+            converged_wake,
+            converged_cycles,
+            converged_ar,
+            converged_chordwise,
+        ) = result
         print(f"Wake type:       {'Prescribed' if converged_wake else 'Free'}")
         print(f"Wake length:     {converged_cycles} cycles")
         print(f"Panel AR:        {converged_ar}")
