@@ -103,7 +103,7 @@ def create_codebase_snapshot(output_dir: Path) -> None:
     snapshot_dir = output_dir / "codebase_snapshot"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    project_root = Path(__file__).parent.parent.parent
+    project_root = Path(__file__).parent.parent
     gammabot_dir = Path(__file__).parent
 
     # Copy pterasoftware package (excluding __pycache__ and _airfoils)
