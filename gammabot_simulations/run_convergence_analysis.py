@@ -296,17 +296,18 @@ def run_convergence_analysis(
     print("This may take a while depending on the parameter ranges.")
     print()
 
-    result = ps.convergence.analyze_unsteady_convergence_non_trapezoidal(
+    result = ps.convergence.analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         ref_problem=ref_problem,
         wing_geometry_resampler=resampler,
         prescribed_wake=True,
         free_wake=True,
-        delta_time_bounds=(1 / 170 / 10, 1 / 170 / 20),
-        num_cycles_bounds=(2 - 1, 2 + 3),
-        panel_aspect_ratio_bounds=(1 + 3, 1 - 0),
-        num_chordwise_panels_bounds=(8 - 3, 8 + 3),
+        num_cycles_bounds=(5, 15),
+        panel_aspect_ratio_bounds=(4, 1),
+        num_chordwise_panels_bounds=(10, 20),
         visualize_meshes=visualize,
         visualization_dir=vis_dir,
+        rtol=0.10,
+        atol=0.1,
     )
 
     # Print results
@@ -317,7 +318,6 @@ def run_convergence_analysis(
 
     if result[0] is not None:
         (
-            converged_delta_time,
             converged_wake,
             converged_cycles,
             converged_ar,

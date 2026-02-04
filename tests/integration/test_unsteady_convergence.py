@@ -149,7 +149,8 @@ class TestUnsteadyConvergenceNonTrapezoidal(unittest.TestCase):
                 panel_aspect_ratio_bounds=(4, 2),
                 num_chordwise_panels_bounds=(2, 4),
                 delta_time_bounds=(0.04, 0.02),
-                convergence_criteria=20.0,  # More lenient for faster convergence
+                rtol=0.20,
+                atol=0.001,
                 show_solver_progress=False,
             )
         )
@@ -189,7 +190,8 @@ class TestUnsteadyConvergenceNonTrapezoidal(unittest.TestCase):
                 num_chords_bounds=(1, 2),
                 panel_aspect_ratio_bounds=(4, 2),
                 num_chordwise_panels_bounds=(2, 4),
-                convergence_criteria=10.0,
+                rtol=0.10,
+                atol=0.001,
                 show_solver_progress=False,
             )
         )
@@ -219,7 +221,8 @@ class TestUnsteadyConvergenceNonTrapezoidal(unittest.TestCase):
                 num_chordwise_panels_bounds=(2, 4),
                 delta_time=0.01,
                 delta_time_bounds=(0.04, 0.02),
-                convergence_criteria=10.0,
+                rtol=0.10,
+                atol=0.001,
                 show_solver_progress=False,
             )
 
