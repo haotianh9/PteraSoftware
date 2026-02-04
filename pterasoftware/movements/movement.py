@@ -24,6 +24,7 @@ from . import operating_point_movement as operating_point_movement_mod
 movement_logger = _logging.get_logger("movements.movement")
 
 
+# REFACTOR: Add a unit test of the new clamping behavior for delta_time="optimize".
 class Movement:
     """A class used to contain an UnsteadyProblem's movement.
 
@@ -61,17 +62,16 @@ class Movement:
         :param operating_point_movement: An OperatingPointMovement characterizing any
             changes to the UnsteadyProblem's operating conditions.
         :param delta_time: The time between each time step. Accepts the following: None
-            (default): Movement calculates a fast estimate based on freestream velocity
-            alone. This works well when forward velocity dominates, but may give poor
-            results at high Strouhal numbers where motion velocity is significant. The
-            estimate is based on the first base Airplane's reference chord length, its
-            first Wing's number of chordwise panels, and its base OperatingPoint's
-            velocity. "optimize": Movement runs an iterative optimization to find the
-            delta_time that minimizes the area mismatch between wake RingVortices and
-            their parent bound trailing edge RingVortices. This is slower but produces
-            better results at high Strouhal numbers. Positive number (int or float): Use
-            the specified value directly. All values are converted internally to floats.
-            The units are in seconds.
+            (default): Movement calculates a fast estimate based on freestream velocity,
+            clamped to ensure at least 30 time steps per lcm_period. The estimate is
+            based on the first base Airplane's reference chord length, its first Wing's
+            number of chordwise panels, and its base OperatingPoint's velocity.
+            "optimize": Movement runs an iterative optimization to find the delta_time
+            that minimizes the area mismatch between wake RingVortices and their parent
+            bound trailing edge RingVortices. This is slower but produces better results
+            at high Strouhal numbers. Positive number (int or float): Use the specified
+            value directly. All values are converted internally to floats. The units are
+            in seconds.
         :param num_cycles: The number of cycles of the maximum period motion used to
             calculate a num_steps parameter initialized as None if Movement isn't
             static. If num_steps is not None or if Movement is static, this must be
@@ -144,8 +144,6 @@ class Movement:
             )
         else:
             # Calculate initial delta_time estimate based on freestream velocity.
-            # This works well when forward velocity dominates, but may give poor
-            # results at high Strouhal numbers where motion velocity is significant.
             delta_times = []
             for airplane_movement in self._airplane_movements:
                 # TODO: Consider making this also average across each Airplane's Wings.
@@ -164,6 +162,14 @@ class Movement:
 
             # Set the delta_time to be the average of the Airplanes' ideal delta times.
             delta_time = sum(delta_times) / len(delta_times)
+
+            # Clamp the estimate so there are at least 30 time steps per
+            # lcm_period. Without this clamp, the velocity only estimate can be
+            # too large at high Strouhal numbers where motion induced velocity
+            # dominates the freestream velocity.
+            _lcm_period = self.lcm_period
+            if _lcm_period > 0.0:
+                delta_time = min(delta_time, _lcm_period / 30)
 
         # Run delta_time optimization if requested.
         if _should_optimize_delta_time:
