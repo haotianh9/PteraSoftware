@@ -17,9 +17,12 @@ delta_time instead of sweeping it as a convergence parameter.
 
 from __future__ import annotations
 
+import contextlib
+import json
+import sys
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Generator
 
 import numpy as np
 
@@ -100,6 +103,49 @@ def _calculate_wing_span_and_avg_chord(
     avg_chord = float(np.mean(wing_section_data[:, 3]))
 
     return total_span, avg_chord
+
+
+@contextlib.contextmanager
+def _lock_cache_file(cache_path: Path) -> Generator[None, None, None]:
+    """Acquire an exclusive file lock for safe concurrent cache access.
+
+    Uses a .lock file adjacent to the cache file. On Windows uses msvcrt locking, on
+    Unix uses fcntl file locking.
+
+    :param cache_path: Path to the cache file to lock.
+    """
+    lock_path = cache_path.with_suffix(cache_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(lock_path, "w")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            # Write a byte so there is content to lock.
+            lock_fh.write(" ")
+            lock_fh.flush()
+            lock_fh.seek(0)
+            # LK_LOCK retries for approximately 10 seconds before raising OSError.
+            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                lock_fh.seek(0)
+                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        lock_fh.close()
 
 
 def analyze_unsteady_convergence_non_trapezoidal(
@@ -1165,6 +1211,7 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
     show_solver_progress: bool | np.bool_ = True,
     visualize_meshes: bool | np.bool_ = False,
     visualization_dir: str | None = None,
+    cache_file: str | Path | None = None,
 ) -> tuple[bool, int, int, int] | tuple[None, None, None, None]:
     """Finds the converged parameters of an UnsteadyProblem with non-trapezoidal wings,
     using Movement's "optimize" option for delta_time.
@@ -1250,6 +1297,10 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         is False.
     :param visualization_dir: Directory to save mesh visualizations. Required if
         visualize_meshes is True. The default is None.
+    :param cache_file: Path to a JSON file for caching simulation results. When
+        provided, previously computed results are loaded from this file and reused,
+        skipping redundant simulations. New results are saved to this file after each
+        simulation. If None (default), no caching is performed.
     :return: A tuple of (converged_wake, converged_wake_length, converged_panel_ar,
         converged_num_chordwise_panels), or (None, None, None, None) if not converged.
     """
@@ -1384,6 +1435,18 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         assert visualization_dir is not None
         Path(visualization_dir).mkdir(parents=True, exist_ok=True)
 
+    # Validate and load cache_file.
+    simulation_cache: dict[str, dict] = {}
+    persisted_dt_cache: dict[str, float] = {}
+    if cache_file is not None:
+        cache_file = Path(cache_file)
+        if cache_file.exists():
+            with _lock_cache_file(cache_file):
+                with open(cache_file, "r") as f:
+                    loaded_cache = json.load(f)
+            persisted_dt_cache = loaded_cache.pop("_optimized_dt", {})
+            simulation_cache = loaded_cache
+
     # ==========================================================================
     # SETUP
     # ==========================================================================
@@ -1458,6 +1521,35 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
     # Caches.
     num_cross_sections_cache: dict[tuple[int, int, int], int] = {}
     geometry_cache: dict[tuple[int, int], np.ndarray] = {}
+    optimized_dt_cache: dict[tuple[int, int], float] = {
+        tuple(int(x) for x in k.split(",")): v  # type: ignore[misc]
+        for k, v in persisted_dt_cache.items()
+    }
+
+    # Pre-populate result arrays from the simulation cache so that convergence
+    # checks can compare against values computed in previous runs.
+    num_prepopulated = 0
+    for wake_id, wake in enumerate(wake_list):
+        for length_id, wake_length in enumerate(wake_lengths_list):
+            for ar_id, panel_aspect_ratio in enumerate(panel_aspect_ratios_list):
+                for chord_id, num_chordwise_panels in enumerate(
+                    num_chordwise_panels_list
+                ):
+                    key = (
+                        f"{wake},{wake_length},"
+                        f"{panel_aspect_ratio},{num_chordwise_panels}"
+                    )
+                    if key in simulation_cache:
+                        cached = simulation_cache[key]
+                        finalCoefficients[wake_id, length_id, ar_id, chord_id, 0, :] = (
+                            cached["coefficients"]
+                        )
+                        iter_times[wake_id, length_id, ar_id, chord_id] = cached["time"]
+                        num_prepopulated += 1
+    if num_prepopulated > 0:
+        convergence_logger.info(
+            f"\tPre-populated {num_prepopulated} entries from cache"
+        )
 
     iteration = 0
     num_iterations = (
@@ -1501,184 +1593,223 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                     )
 
                     # ----------------------------------------------------------
-                    # BUILD GEOMETRY FOR THIS ITERATION
+                    # CHECK SIMULATION CACHE
                     # ----------------------------------------------------------
 
-                    these_base_wings = []
-                    these_wing_movements = []
-
-                    for wing_id in range(num_wings):
-                        ref_wing_movement = ref_airplane_movement.wing_movements[
-                            wing_id
-                        ]
-                        ref_base_wing = ref_wing_movement.base_wing
-
-                        # Get span and avg_chord for this wing.
-                        span, avg_chord = wing_geometry_info[wing_id]
-
-                        # Calculate number of cross sections needed.
-                        cache_key = (ar_id, chord_id, wing_id)
-                        if cache_key in num_cross_sections_cache:
-                            num_sections = num_cross_sections_cache[cache_key]
-                        else:
-                            num_sections = _get_num_cross_sections_for_panel_ar(
-                                span,
-                                avg_chord,
-                                panel_aspect_ratio,
-                                num_chordwise_panels,
-                            )
-                            num_cross_sections_cache[cache_key] = num_sections
-
-                        convergence_logger.debug(
-                            f"\t\t\t\t\t\tWing {wing_id}: {num_sections} sections"
-                        )
-
-                        # Get resampled geometry (with caching).
-                        geom_cache_key = (wing_id, num_sections)
-                        if geom_cache_key in geometry_cache:
-                            wing_section_data = geometry_cache[geom_cache_key]
-                        else:
-                            wing_section_data = wing_geometry_resampler(
-                                wing_id, num_sections
-                            )
-                            geometry_cache[geom_cache_key] = wing_section_data
-
-                        # Create WingCrossSections.
-                        these_base_wing_cross_sections: list[
-                            geometry.wing_cross_section.WingCrossSection
-                        ] = []
-                        these_wing_cross_section_movements: list[
-                            movements.wing_cross_section_movement.WingCrossSectionMovement
-                        ] = []
-                        num_wing_cross_sections = num_sections + 1
-
-                        for wing_cross_section_id in range(num_wing_cross_sections):
-                            this_num_spanwise_panels: int | None = (
-                                1 if wing_cross_section_id < num_sections else None
-                            )
-
-                            # Get reference WingCrossSection for non-geometry
-                            # properties.
-                            ref_wing_cross_section_movement = (
-                                ref_wing_movement.wing_cross_section_movements[
-                                    0 if wing_cross_section_id == 0 else -1
-                                ]
-                            )
-                            ref_base_wing_cross_section = (
-                                ref_wing_cross_section_movement.base_wing_cross_section
-                            )
-
-                            this_base_wing_cross_section = geometry.wing_cross_section.WingCrossSection(
-                                Lp_Wcsp_Lpp=tuple(
-                                    wing_section_data[wing_cross_section_id, :3]
-                                ),
-                                chord=float(
-                                    wing_section_data[wing_cross_section_id, 3]
-                                ),
-                                num_spanwise_panels=this_num_spanwise_panels,
-                                angles_Wcsp_to_Wcs_ixyz=ref_base_wing_cross_section.angles_Wcsp_to_Wcs_ixyz,
-                                airfoil=geometry.airfoil.Airfoil(
-                                    name=ref_base_wing_cross_section.airfoil.name,
-                                    outline_A_lp=ref_base_wing_cross_section.airfoil.outline_A_lp,
-                                    resample=ref_base_wing_cross_section.airfoil.resample,
-                                    n_points_per_side=ref_base_wing_cross_section.airfoil.n_points_per_side,
-                                ),
-                                control_surface_symmetry_type=ref_base_wing_cross_section.control_surface_symmetry_type,
-                                control_surface_hinge_point=ref_base_wing_cross_section.control_surface_hinge_point,
-                                control_surface_deflection=ref_base_wing_cross_section.control_surface_deflection,
-                                spanwise_spacing=ref_base_wing_cross_section.spanwise_spacing,
-                            )
-                            these_base_wing_cross_sections.append(
-                                this_base_wing_cross_section
-                            )
-
-                            # Create WingCrossSectionMovement (no individual motion).
-                            this_wing_cross_section_movement = movements.wing_cross_section_movement.WingCrossSectionMovement(
-                                base_wing_cross_section=this_base_wing_cross_section,
-                            )
-                            these_wing_cross_section_movements.append(
-                                this_wing_cross_section_movement
-                            )
-
-                        # Create Wing.
-                        this_base_wing = geometry.wing.Wing(
-                            wing_cross_sections=these_base_wing_cross_sections,
-                            num_chordwise_panels=num_chordwise_panels,
-                            name=ref_base_wing.name,
-                            Ler_Gs_Cgs=ref_base_wing.Ler_Gs_Cgs,
-                            angles_Gs_to_Wn_ixyz=ref_base_wing.angles_Gs_to_Wn_ixyz,
-                            symmetric=ref_base_wing.symmetric,
-                            mirror_only=ref_base_wing.mirror_only,
-                            symmetryNormal_G=ref_base_wing.symmetryNormal_G,
-                            symmetryPoint_G_Cg=ref_base_wing.symmetryPoint_G_Cg,
-                            chordwise_spacing=ref_base_wing.chordwise_spacing,
-                        )
-                        these_base_wings.append(this_base_wing)
-
-                        # Create WingMovement.
-                        this_wing_movement = movements.wing_movement.WingMovement(
-                            base_wing=this_base_wing,
-                            wing_cross_section_movements=these_wing_cross_section_movements,
-                            rotationPointOffset_Gs_Ler=ref_wing_movement.rotationPointOffset_Gs_Ler,
-                            ampLer_Gs_Cgs=ref_wing_movement.ampLer_Gs_Cgs,
-                            periodLer_Gs_Cgs=ref_wing_movement.periodLer_Gs_Cgs,
-                            spacingLer_Gs_Cgs=ref_wing_movement.spacingLer_Gs_Cgs,
-                            phaseLer_Gs_Cgs=ref_wing_movement.phaseLer_Gs_Cgs,
-                            ampAngles_Gs_to_Wn_ixyz=ref_wing_movement.ampAngles_Gs_to_Wn_ixyz,
-                            periodAngles_Gs_to_Wn_ixyz=ref_wing_movement.periodAngles_Gs_to_Wn_ixyz,
-                            spacingAngles_Gs_to_Wn_ixyz=ref_wing_movement.spacingAngles_Gs_to_Wn_ixyz,
-                            phaseAngles_Gs_to_Wn_ixyz=ref_wing_movement.phaseAngles_Gs_to_Wn_ixyz,
-                        )
-                        these_wing_movements.append(this_wing_movement)
-
-                    # Create Airplane.
-                    ref_base_airplane = ref_airplane_movement.base_airplane
-                    this_base_airplane = geometry.airplane.Airplane(
-                        wings=these_base_wings,
-                        name=ref_base_airplane.name,
-                        Cg_GP1_CgP1=ref_base_airplane.Cg_GP1_CgP1,
-                        weight=ref_base_airplane.weight,
-                        s_ref=None,
-                        c_ref=None,
-                        b_ref=None,
+                    sim_cache_key = (
+                        f"{wake},{wake_length},"
+                        f"{panel_aspect_ratio},{num_chordwise_panels}"
                     )
 
-                    # ----------------------------------------------------------
-                    # OPTIONAL: VISUALIZE MESH
-                    # ----------------------------------------------------------
+                    if sim_cache_key in simulation_cache:
+                        # Cache hit: restore results from cache.
+                        cached = simulation_cache[sim_cache_key]
+                        theseFinalCoefficients = np.zeros((1, 6), dtype=float)
+                        theseFinalCoefficients[0, :] = cached["coefficients"]
+                        theseFinalLoads = np.array(cached["loads"], dtype=float)
+                        this_iter_time = cached["time"]
 
-                    if visualize_meshes:
-                        ar_ok, actual_ar = _verify_panel_aspect_ratio(
-                            this_base_airplane, panel_aspect_ratio
-                        )
+                        # Populate num_cross_sections_cache (needed for final
+                        # convergence logging).
+                        for wing_id in range(num_wings):
+                            cs_cache_key = (ar_id, chord_id, wing_id)
+                            if cs_cache_key not in num_cross_sections_cache:
+                                span, avg_chord = wing_geometry_info[wing_id]
+                                num_cross_sections_cache[cs_cache_key] = (
+                                    _get_num_cross_sections_for_panel_ar(
+                                        span,
+                                        avg_chord,
+                                        panel_aspect_ratio,
+                                        num_chordwise_panels,
+                                    )
+                                )
+
                         convergence_logger.info(
-                            f"\t\t\t\t\t\tTarget AR: {panel_aspect_ratio}, "
-                            f"Actual AR: {actual_ar:.2f}, OK: {ar_ok}"
+                            f"\t\t\t\t\t\tCache hit (original time: "
+                            f"{this_iter_time:.3f} s)"
+                        )
+                    else:
+                        # Cache miss: build geometry, run solver, extract results.
+
+                        # ------------------------------------------------------
+                        # BUILD GEOMETRY FOR THIS ITERATION
+                        # ------------------------------------------------------
+
+                        these_base_wings = []
+                        these_wing_movements = []
+
+                        for wing_id in range(num_wings):
+                            ref_wing_movement = ref_airplane_movement.wing_movements[
+                                wing_id
+                            ]
+                            ref_base_wing = ref_wing_movement.base_wing
+
+                            # Get span and avg_chord for this wing.
+                            span, avg_chord = wing_geometry_info[wing_id]
+
+                            # Calculate number of cross sections needed.
+                            cache_key = (ar_id, chord_id, wing_id)
+                            if cache_key in num_cross_sections_cache:
+                                num_sections = num_cross_sections_cache[cache_key]
+                            else:
+                                num_sections = _get_num_cross_sections_for_panel_ar(
+                                    span,
+                                    avg_chord,
+                                    panel_aspect_ratio,
+                                    num_chordwise_panels,
+                                )
+                                num_cross_sections_cache[cache_key] = num_sections
+
+                            convergence_logger.debug(
+                                f"\t\t\t\t\t\tWing {wing_id}: {num_sections} sections"
+                            )
+
+                            # Get resampled geometry (with caching).
+                            geom_cache_key = (wing_id, num_sections)
+                            if geom_cache_key in geometry_cache:
+                                wing_section_data = geometry_cache[geom_cache_key]
+                            else:
+                                wing_section_data = wing_geometry_resampler(
+                                    wing_id, num_sections
+                                )
+                                geometry_cache[geom_cache_key] = wing_section_data
+
+                            # Create WingCrossSections.
+                            these_base_wing_cross_sections: list[
+                                geometry.wing_cross_section.WingCrossSection
+                            ] = []
+                            these_wing_cross_section_movements: list[
+                                movements.wing_cross_section_movement.WingCrossSectionMovement
+                            ] = []
+                            num_wing_cross_sections = num_sections + 1
+
+                            for wing_cross_section_id in range(num_wing_cross_sections):
+                                this_num_spanwise_panels: int | None = (
+                                    1 if wing_cross_section_id < num_sections else None
+                                )
+
+                                # Get reference WingCrossSection for non-geometry
+                                # properties.
+                                ref_wing_cross_section_movement = (
+                                    ref_wing_movement.wing_cross_section_movements[
+                                        0 if wing_cross_section_id == 0 else -1
+                                    ]
+                                )
+                                ref_base_wing_cross_section = (
+                                    ref_wing_cross_section_movement.base_wing_cross_section
+                                )
+
+                                this_base_wing_cross_section = geometry.wing_cross_section.WingCrossSection(
+                                    Lp_Wcsp_Lpp=tuple(
+                                        wing_section_data[wing_cross_section_id, :3]
+                                    ),
+                                    chord=float(
+                                        wing_section_data[wing_cross_section_id, 3]
+                                    ),
+                                    num_spanwise_panels=this_num_spanwise_panels,
+                                    angles_Wcsp_to_Wcs_ixyz=ref_base_wing_cross_section.angles_Wcsp_to_Wcs_ixyz,
+                                    airfoil=geometry.airfoil.Airfoil(
+                                        name=ref_base_wing_cross_section.airfoil.name,
+                                        outline_A_lp=ref_base_wing_cross_section.airfoil.outline_A_lp,
+                                        resample=ref_base_wing_cross_section.airfoil.resample,
+                                        n_points_per_side=ref_base_wing_cross_section.airfoil.n_points_per_side,
+                                    ),
+                                    control_surface_symmetry_type=ref_base_wing_cross_section.control_surface_symmetry_type,
+                                    control_surface_hinge_point=ref_base_wing_cross_section.control_surface_hinge_point,
+                                    control_surface_deflection=ref_base_wing_cross_section.control_surface_deflection,
+                                    spanwise_spacing=ref_base_wing_cross_section.spanwise_spacing,
+                                )
+                                these_base_wing_cross_sections.append(
+                                    this_base_wing_cross_section
+                                )
+
+                                # Create WingCrossSectionMovement (no individual
+                                # motion).
+                                this_wing_cross_section_movement = movements.wing_cross_section_movement.WingCrossSectionMovement(
+                                    base_wing_cross_section=this_base_wing_cross_section,
+                                )
+                                these_wing_cross_section_movements.append(
+                                    this_wing_cross_section_movement
+                                )
+
+                            # Create Wing.
+                            this_base_wing = geometry.wing.Wing(
+                                wing_cross_sections=these_base_wing_cross_sections,
+                                num_chordwise_panels=num_chordwise_panels,
+                                name=ref_base_wing.name,
+                                Ler_Gs_Cgs=ref_base_wing.Ler_Gs_Cgs,
+                                angles_Gs_to_Wn_ixyz=ref_base_wing.angles_Gs_to_Wn_ixyz,
+                                symmetric=ref_base_wing.symmetric,
+                                mirror_only=ref_base_wing.mirror_only,
+                                symmetryNormal_G=ref_base_wing.symmetryNormal_G,
+                                symmetryPoint_G_Cg=ref_base_wing.symmetryPoint_G_Cg,
+                                chordwise_spacing=ref_base_wing.chordwise_spacing,
+                            )
+                            these_base_wings.append(this_base_wing)
+
+                            # Create WingMovement.
+                            this_wing_movement = movements.wing_movement.WingMovement(
+                                base_wing=this_base_wing,
+                                wing_cross_section_movements=these_wing_cross_section_movements,
+                                rotationPointOffset_Gs_Ler=ref_wing_movement.rotationPointOffset_Gs_Ler,
+                                ampLer_Gs_Cgs=ref_wing_movement.ampLer_Gs_Cgs,
+                                periodLer_Gs_Cgs=ref_wing_movement.periodLer_Gs_Cgs,
+                                spacingLer_Gs_Cgs=ref_wing_movement.spacingLer_Gs_Cgs,
+                                phaseLer_Gs_Cgs=ref_wing_movement.phaseLer_Gs_Cgs,
+                                ampAngles_Gs_to_Wn_ixyz=ref_wing_movement.ampAngles_Gs_to_Wn_ixyz,
+                                periodAngles_Gs_to_Wn_ixyz=ref_wing_movement.periodAngles_Gs_to_Wn_ixyz,
+                                spacingAngles_Gs_to_Wn_ixyz=ref_wing_movement.spacingAngles_Gs_to_Wn_ixyz,
+                                phaseAngles_Gs_to_Wn_ixyz=ref_wing_movement.phaseAngles_Gs_to_Wn_ixyz,
+                            )
+                            these_wing_movements.append(this_wing_movement)
+
+                        # Create Airplane.
+                        ref_base_airplane = ref_airplane_movement.base_airplane
+                        this_base_airplane = geometry.airplane.Airplane(
+                            wings=these_base_wings,
+                            name=ref_base_airplane.name,
+                            Cg_GP1_CgP1=ref_base_airplane.Cg_GP1_CgP1,
+                            weight=ref_base_airplane.weight,
+                            s_ref=None,
+                            c_ref=None,
+                            b_ref=None,
                         )
 
-                        vis_filename = (
-                            f"mesh_ar{panel_aspect_ratio}"
-                            f"_chord{num_chordwise_panels}.png"
-                        )
+                        # ------------------------------------------------------
+                        # OPTIONAL: VISUALIZE MESH
+                        # ------------------------------------------------------
 
-                        assert visualization_dir is not None
-                        vis_path = Path(visualization_dir) / vis_filename
-                        _visualize_wing_mesh(
-                            this_base_airplane,
-                            title=(
-                                f"AR={panel_aspect_ratio}, "
-                                f"Chordwise={num_chordwise_panels}"
-                            ),
-                            show=False,
-                            save_path=str(vis_path),
-                        )
+                        if visualize_meshes:
+                            ar_ok, actual_ar = _verify_panel_aspect_ratio(
+                                this_base_airplane, panel_aspect_ratio
+                            )
+                            convergence_logger.info(
+                                f"\t\t\t\t\t\tTarget AR: {panel_aspect_ratio}, "
+                                f"Actual AR: {actual_ar:.2f}, OK: {ar_ok}"
+                            )
 
-                    # ----------------------------------------------------------
-                    # CREATE MOVEMENT AND PROBLEM
-                    # ----------------------------------------------------------
+                            vis_filename = (
+                                f"mesh_ar{panel_aspect_ratio}"
+                                f"_chord{num_chordwise_panels}.png"
+                            )
 
-                    this_airplane_movement = (
-                        movements.airplane_movement.AirplaneMovement(
+                            assert visualization_dir is not None
+                            vis_path = Path(visualization_dir) / vis_filename
+                            _visualize_wing_mesh(
+                                this_base_airplane,
+                                title=(
+                                    f"AR={panel_aspect_ratio}, "
+                                    f"Chordwise={num_chordwise_panels}"
+                                ),
+                                show=False,
+                                save_path=str(vis_path),
+                            )
+
+                        # ------------------------------------------------------
+                        # CREATE MOVEMENT AND PROBLEM
+                        # ------------------------------------------------------
+
+                        this_airplane_movement = movements.airplane_movement.AirplaneMovement(
                             base_airplane=this_base_airplane,
                             wing_movements=these_wing_movements,
                             ampCg_GP1_CgP1=ref_airplane_movement.ampCg_GP1_CgP1,
@@ -1686,81 +1817,129 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                             spacingCg_GP1_CgP1=ref_airplane_movement.spacingCg_GP1_CgP1,
                             phaseCg_GP1_CgP1=ref_airplane_movement.phaseCg_GP1_CgP1,
                         )
-                    )
 
-                    if static:
-                        this_movement = movements.movement.Movement(
-                            airplane_movements=[this_airplane_movement],
-                            operating_point_movement=ref_operating_point_movement,
-                            num_chords=wake_length,
-                            delta_time="optimize",
-                        )
-                    else:
-                        this_movement = movements.movement.Movement(
-                            airplane_movements=[this_airplane_movement],
-                            operating_point_movement=ref_operating_point_movement,
-                            num_cycles=wake_length,
-                            delta_time="optimize",
+                        # Use cached optimized delta_time if available,
+                        # since it depends only on panel AR and chordwise
+                        # panel count.
+                        dt_cache_key = (panel_aspect_ratio, num_chordwise_panels)
+                        this_delta_time: str | float
+                        if dt_cache_key in optimized_dt_cache:
+                            this_delta_time = optimized_dt_cache[dt_cache_key]
+                        else:
+                            this_delta_time = "optimize"
+
+                        if static:
+                            this_movement = movements.movement.Movement(
+                                airplane_movements=[this_airplane_movement],
+                                operating_point_movement=ref_operating_point_movement,
+                                num_chords=wake_length,
+                                delta_time=this_delta_time,
+                            )
+                        else:
+                            this_movement = movements.movement.Movement(
+                                airplane_movements=[this_airplane_movement],
+                                operating_point_movement=ref_operating_point_movement,
+                                num_cycles=wake_length,
+                                delta_time=this_delta_time,
+                            )
+
+                        # Cache the optimized delta_time for reuse.
+                        if dt_cache_key not in optimized_dt_cache:
+                            optimized_dt_cache[dt_cache_key] = this_movement.delta_time
+
+                        this_problem = problems.UnsteadyProblem(
+                            movement=this_movement,
+                            only_final_results=True,
                         )
 
-                    this_problem = problems.UnsteadyProblem(
-                        movement=this_movement,
-                        only_final_results=True,
-                    )
+                        # ------------------------------------------------------
+                        # RUN SOLVER
+                        # ------------------------------------------------------
+
+                        this_solver = unsteady_ring_vortex_lattice_method.UnsteadyRingVortexLatticeMethodSolver(
+                            unsteady_problem=this_problem
+                        )
+
+                        if isinstance(this_delta_time, str):
+                            convergence_logger.info(
+                                f"\t\t\t\t\t\tOptimized delta_time: "
+                                f"{this_movement.delta_time:.6f} s"
+                            )
+                        else:
+                            convergence_logger.info(
+                                f"\t\t\t\t\t\tCached delta_time: "
+                                f"{this_movement.delta_time:.6f} s"
+                            )
+                        convergence_logger.info("\t\t\t\t\t\tStarting simulation...")
+
+                        iter_start = time.time()
+                        this_solver.run(
+                            prescribed_wake=wake,
+                            calculate_streamlines=False,
+                            show_progress=show_solver_progress,
+                        )
+                        iter_stop = time.time()
+                        this_iter_time = iter_stop - iter_start
+
+                        convergence_logger.info(
+                            f"\t\t\t\t\t\tSimulation completed in "
+                            f"{this_iter_time:.3f} s"
+                        )
+
+                        # ------------------------------------------------------
+                        # EXTRACT RESULTS
+                        # ------------------------------------------------------
+
+                        theseFinalCoefficients = np.zeros((1, 6), dtype=float)
+                        theseFinalLoads = np.zeros(6, dtype=float)
+
+                        if static:
+                            theseFinalCoefficients[0, :3] = (
+                                this_problem.finalForceCoefficients_W[0]
+                            )
+                            theseFinalCoefficients[0, 3:] = (
+                                this_problem.finalMomentCoefficients_W_CgP1[0]
+                            )
+                            theseFinalLoads[:3] = this_problem.finalForces_W[0]
+                            theseFinalLoads[3:] = this_problem.finalMoments_W_CgP1[0]
+                        else:
+                            theseFinalCoefficients[0, :3] = (
+                                this_problem.finalMeanForceCoefficients_W[0]
+                            )
+                            theseFinalCoefficients[0, 3:] = (
+                                this_problem.finalMeanMomentCoefficients_W_CgP1[0]
+                            )
+                            theseFinalLoads[:3] = this_problem.finalMeanForces_W[0]
+                            theseFinalLoads[3:] = this_problem.finalMeanMoments_W_CgP1[
+                                0
+                            ]
+
+                        # Save to simulation cache.
+                        if cache_file is not None:
+                            simulation_cache[sim_cache_key] = {
+                                "coefficients": theseFinalCoefficients[0, :].tolist(),
+                                "loads": theseFinalLoads.tolist(),
+                                "time": this_iter_time,
+                            }
+                            cache_file.parent.mkdir(parents=True, exist_ok=True)
+                            with _lock_cache_file(cache_file):
+                                # Re-read to merge entries from other processes.
+                                if cache_file.exists():
+                                    with open(cache_file, "r") as f:
+                                        disk_cache = json.load(f)
+                                else:
+                                    disk_cache = {}
+                                disk_cache.update(simulation_cache)
+                                disk_cache["_optimized_dt"] = {
+                                    f"{k[0]},{k[1]}": v
+                                    for k, v in optimized_dt_cache.items()
+                                }
+                                with open(cache_file, "w") as f:
+                                    json.dump(disk_cache, f, indent=2)
 
                     # ----------------------------------------------------------
-                    # RUN SOLVER
+                    # STORE RESULTS
                     # ----------------------------------------------------------
-
-                    this_solver = unsteady_ring_vortex_lattice_method.UnsteadyRingVortexLatticeMethodSolver(
-                        unsteady_problem=this_problem
-                    )
-
-                    convergence_logger.info(
-                        f"\t\t\t\t\t\tOptimized delta_time: "
-                        f"{this_movement.delta_time:.6f} s"
-                    )
-                    convergence_logger.info("\t\t\t\t\t\tStarting simulation...")
-
-                    iter_start = time.time()
-                    this_solver.run(
-                        prescribed_wake=wake,
-                        calculate_streamlines=False,
-                        show_progress=show_solver_progress,
-                    )
-                    iter_stop = time.time()
-                    this_iter_time = iter_stop - iter_start
-
-                    convergence_logger.info(
-                        f"\t\t\t\t\t\tSimulation completed in "
-                        f"{this_iter_time:.3f} s"
-                    )
-
-                    # ----------------------------------------------------------
-                    # EXTRACT AND STORE RESULTS
-                    # ----------------------------------------------------------
-
-                    theseFinalCoefficients = np.zeros((1, 6), dtype=float)
-                    theseFinalLoads = np.zeros(6, dtype=float)
-
-                    if static:
-                        theseFinalCoefficients[0, :3] = (
-                            this_problem.finalForceCoefficients_W[0]
-                        )
-                        theseFinalCoefficients[0, 3:] = (
-                            this_problem.finalMomentCoefficients_W_CgP1[0]
-                        )
-                        theseFinalLoads[:3] = this_problem.finalForces_W[0]
-                        theseFinalLoads[3:] = this_problem.finalMoments_W_CgP1[0]
-                    else:
-                        theseFinalCoefficients[0, :3] = (
-                            this_problem.finalMeanForceCoefficients_W[0]
-                        )
-                        theseFinalCoefficients[0, 3:] = (
-                            this_problem.finalMeanMomentCoefficients_W_CgP1[0]
-                        )
-                        theseFinalLoads[:3] = this_problem.finalMeanForces_W[0]
-                        theseFinalLoads[3:] = this_problem.finalMeanMoments_W_CgP1[0]
 
                     finalCoefficients[wake_id, length_id, ar_id, chord_id, :, :] = (
                         theseFinalCoefficients

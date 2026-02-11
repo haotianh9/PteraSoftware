@@ -4,10 +4,16 @@ This script demonstrates how to use the analyze_unsteady_convergence_non_trapezo
 function to find converged simulation parameters for GammaBot wings.
 
 Usage:
-    python run_convergence_analysis.py [config_name] [--visualize]
+    python run_convergence_analysis.py [config_name] [options]
 
-Example:
+Examples:
     python run_convergence_analysis.py L170V_R180V_170Hz --visualize
+    python run_convergence_analysis.py L170V_R180V_170Hz --num-cycles 2 5
+    python run_convergence_analysis.py L170V_R180V_170Hz --num-cycles 6 10
+
+    # Run two ranges in parallel (both write to the same cache file):
+    python run_convergence_analysis.py L170V_R180V_170Hz --num-cycles 2 5 &
+    python run_convergence_analysis.py L170V_R180V_170Hz --num-cycles 6 10 &
 """
 
 import argparse
@@ -265,18 +271,42 @@ def create_ref_problem(
 def run_convergence_analysis(
     config_name: str,
     visualize: bool = False,
+    clear_cache: bool = False,
+    prescribed_wake: bool = True,
+    free_wake: bool = False,
+    num_cycles_bounds: tuple[int, int] = (1, 1),
+    panel_ar_bounds: tuple[int, int] = (4, 1),
+    chordwise_bounds: tuple[int, int] = (5, 10),
 ) -> tuple[bool | None, int | None, int | None, int | None]:
     """Run convergence analysis for a GammaBot configuration.
 
     :param config_name: Name of the GammaBot configuration to analyze.
     :param visualize: If True, save mesh visualizations.
+    :param clear_cache: If True, delete the cache file before running.
+    :param prescribed_wake: If True, analyze prescribed wake. Default is True.
+    :param free_wake: If True, analyze free wake. Default is False.
+    :param num_cycles_bounds: Range of wake lengths in cycles. Default is (1, 1).
+    :param panel_ar_bounds: Range of panel aspect ratios (coarsest, finest). Default is
+        (4, 1).
+    :param chordwise_bounds: Range of chordwise panel counts. Default is (5, 10).
     :return: Tuple of (converged_wake, converged_cycles, converged_ar, converged_chordwise).
     """
     print(f"Running convergence analysis for configuration: {config_name}")
+    print(f"  prescribed_wake={prescribed_wake}, free_wake={free_wake}")
+    print(f"  num_cycles_bounds={num_cycles_bounds}")
+    print(f"  panel_ar_bounds={panel_ar_bounds}")
+    print(f"  chordwise_bounds={chordwise_bounds}")
     print("-" * 60)
 
     # Set up logging
     ps._logging.set_up_logging(level="INFO")
+
+    # Set up cache file
+    cache_dir = Path(__file__).parent / "convergence_cache"
+    cache_file = cache_dir / f"{config_name}.json"
+    if clear_cache and cache_file.exists():
+        cache_file.unlink()
+        print(f"Cleared cache file: {cache_file}")
 
     # Create reference problem
     print("Creating reference problem...")
@@ -299,15 +329,17 @@ def run_convergence_analysis(
     result = ps.convergence.analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         ref_problem=ref_problem,
         wing_geometry_resampler=resampler,
-        prescribed_wake=True,
-        free_wake=True,
-        num_cycles_bounds=(5, 15),
-        panel_aspect_ratio_bounds=(4, 1),
-        num_chordwise_panels_bounds=(10, 20),
+        prescribed_wake=prescribed_wake,
+        free_wake=free_wake,
+        num_cycles_bounds=num_cycles_bounds,
+        panel_aspect_ratio_bounds=panel_ar_bounds,
+        num_chordwise_panels_bounds=chordwise_bounds,
         visualize_meshes=visualize,
         visualization_dir=vis_dir,
-        rtol=0.10,
+        coefficient_mask=(True, False, False, False, False, False),
+        rtol=0.01,
         atol=0.1,
+        cache_file=cache_file,
     )
 
     # Print results
@@ -357,6 +389,47 @@ def main() -> None:
         action="store_true",
         help="List available configurations",
     )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Delete the cache file before running",
+    )
+    parser.add_argument(
+        "--prescribed-wake",
+        action="store_true",
+        default=None,
+        help="Analyze prescribed wake (default if neither wake flag is set)",
+    )
+    parser.add_argument(
+        "--free-wake",
+        action="store_true",
+        default=None,
+        help="Analyze free wake",
+    )
+    parser.add_argument(
+        "--num-cycles",
+        type=int,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=(1, 1),
+        help="Range of wake lengths in cycles (default: 1 1)",
+    )
+    parser.add_argument(
+        "--panel-ar",
+        type=int,
+        nargs=2,
+        metavar=("COARSEST", "FINEST"),
+        default=(4, 1),
+        help="Range of panel aspect ratios, coarsest to finest (default: 4 1)",
+    )
+    parser.add_argument(
+        "--chordwise",
+        type=int,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=(5, 10),
+        help="Range of chordwise panel counts (default: 5 10)",
+    )
 
     args = parser.parse_args()
 
@@ -366,7 +439,24 @@ def main() -> None:
             print(f"  {name}")
         return
 
-    run_convergence_analysis(args.config_name, args.visualize)
+    # Default to prescribed_wake=True, free_wake=False if neither flag is set.
+    if args.prescribed_wake is None and args.free_wake is None:
+        prescribed_wake = True
+        free_wake = False
+    else:
+        prescribed_wake = bool(args.prescribed_wake)
+        free_wake = bool(args.free_wake)
+
+    run_convergence_analysis(
+        config_name=args.config_name,
+        visualize=args.visualize,
+        clear_cache=args.clear_cache,
+        prescribed_wake=prescribed_wake,
+        free_wake=free_wake,
+        num_cycles_bounds=tuple(args.num_cycles),
+        panel_ar_bounds=tuple(args.panel_ar),
+        chordwise_bounds=tuple(args.chordwise),
+    )
 
 
 if __name__ == "__main__":

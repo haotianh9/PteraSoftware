@@ -705,8 +705,8 @@ def _optimize_delta_time_static(
         area mismatch falls below this value, the search terminates early.
     :return: The optimized delta_time value. Its units are in seconds.
     """
-    lower_bound = initial_delta_time / 2.0
-    upper_bound = initial_delta_time * 2.0
+    lower_bound = initial_delta_time / 1.0
+    upper_bound = initial_delta_time * 1.75
 
     # Check initial estimate first before running optimizer.
     initial_mismatch = _compute_wake_area_mismatch(
@@ -812,8 +812,8 @@ def _optimize_delta_time_non_static(
     initial_num_steps = lcm_period / initial_delta_time
 
     # Search from 0.5x to 2x the initial estimate.
-    min_num_steps = max(1, int(initial_num_steps / 2))
-    max_num_steps = int(initial_num_steps * 2) + 1
+    min_num_steps = max(1, int(initial_num_steps / 1.0))
+    max_num_steps = int(initial_num_steps * 1.75) + 1
 
     movement_logger.info(
         "\tSearching num_steps_per_lcm_cycle from "
