@@ -224,6 +224,7 @@ Additionally, these packages are useful for continued development of the softwar
 * docformatter
 * isort
 * mypy
+* octowrap
 * pre-commit
 * PyInstaller
 * scipy-stubs

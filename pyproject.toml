@@ -20,3 +20,11 @@ skip = "docs/_build/*,*.dat"
 black = true
 recursive = true
 force-wrap = true
+
+[tool.octowrap]
+line-length = 88
+recursive = true
+exclude = ["git", ".hg", ".svn", ".bzr", ".venv", "venv", ".mypy_cache", "__pycache__", "_build", "build", "dist", ".eggs", "furo_src", "_resources"]
+todo-patterns = ["FIXME:", "TODO:", "REFACTOR:", "TEST:", "DOCUMENT:"]
+todo-case-sensitive = true
+todo-multiline = true

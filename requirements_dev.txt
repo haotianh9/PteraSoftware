@@ -5,6 +5,7 @@ codespell
 docformatter
 isort
 mypy
+octowrap
 pre-commit
 PyInstaller
 scipy-stubs
