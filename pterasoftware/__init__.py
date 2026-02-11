@@ -12,7 +12,7 @@ None
 
 **Contains the following modules:**
 
-convergence.py: Contains functions for analyzing the convergence of SteadyProblems and
+convergence: Contains functions for analyzing the convergence of SteadyProblems and
 UnsteadyProblems.
 
 operating_point.py: Contains the OperatingPoint class.
