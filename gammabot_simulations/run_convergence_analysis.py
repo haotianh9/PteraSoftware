@@ -337,8 +337,8 @@ def run_convergence_analysis(
         visualize_meshes=visualize,
         visualization_dir=vis_dir,
         coefficient_mask=(True, False, False, False, False, False),
-        rtol=0.01,
-        atol=0.1,
+        rtol=0.001,
+        atol=0.01,
         cache_file=cache_file,
     )
 
