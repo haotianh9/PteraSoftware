@@ -2309,6 +2309,7 @@ def _check_coefficient_convergence(
     coarser_coefficients: np.ndarray,
     rtol: float,
     atol: float,
+    mask: np.ndarray | None = None,
 ) -> tuple[bool, float, np.ndarray, np.ndarray, np.ndarray]:
     """Checks per coefficient convergence using an absolute plus relative tolerance.
 
@@ -2324,13 +2325,19 @@ def _check_coefficient_convergence(
         (coarser resolution) coefficients.
     :param rtol: A float representing the relative tolerance. Must be positive.
     :param atol: A float representing the absolute tolerance. Must be positive.
+    :param mask: A (6,) ndarray of bools that determines which coefficients are checked
+        for convergence. If None, all 6 coefficients are checked. The default is None.
     :return: A tuple of (all_converged, min_metric, errors, tolerances, metrics) where
-        all_converged is a bool indicating whether all 6 coefficients are converged,
-        min_metric is a float representing the minimum metric across all 6 coefficients,
-        errors is a (6,) ndarray of floats representing the absolute errors, tolerances
-        is a (6,) ndarray of floats representing the computed tolerances, and metrics is
-        a (6,) ndarray of floats representing the convergence metrics (percentages).
+        all_converged is a bool indicating whether the masked coefficients are
+        converged, min_metric is a float representing the minimum metric across the
+        masked coefficients, errors is a (6,) ndarray of floats representing the
+        absolute errors, tolerances is a (6,) ndarray of floats representing the
+        computed tolerances, and metrics is a (6,) ndarray of floats representing the
+        convergence metrics (percentages).
     """
+    if mask is None:
+        mask = np.ones(6, dtype=bool)
+
     errors = np.abs(current_coefficients - coarser_coefficients)
     tolerances = atol + rtol * np.maximum(
         np.abs(current_coefficients), np.abs(coarser_coefficients)
@@ -2344,8 +2351,8 @@ def _check_coefficient_convergence(
         else:
             metrics[i] = 100.0 * min(1.0, tolerances[i] / errors[i])
 
-    all_converged = bool(np.all(converged))
-    min_metric = float(np.min(metrics))
+    all_converged = bool(np.all(converged[mask]))
+    min_metric = float(np.min(metrics[mask]))
 
     return all_converged, min_metric, errors, tolerances, metrics
 
@@ -3394,6 +3401,7 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
     num_chordwise_panels_bounds: tuple[int, int] = (3, 12),
     rtol: float | int = 0.05,
     atol: float | int = 0.001,
+    coefficient_mask: tuple[bool, bool, bool, bool, bool, bool] | None = None,
     show_solver_progress: bool | np.bool_ = True,
     visualize_meshes: bool | np.bool_ = False,
     visualization_dir: str | None = None,
@@ -3468,6 +3476,11 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
     :param atol: The absolute tolerance for convergence checking. Provides a floor
         tolerance for coefficients near zero. Must be a positive number (int or float).
         Values are converted to floats internally. The default is 0.001.
+    :param coefficient_mask: A tuple of 6 bools that determines which of the 6 load
+        coefficients (cFX, cFY, cFZ, cMX, cMY, cMZ) are checked for convergence. True
+        means the coefficient is checked; False means it is ignored. At least one
+        element must be True. If None, all 6 coefficients are checked. The default is
+        None.
     :param show_solver_progress: Show TQDM progress bar during solver runs. Can be a
         bool or a numpy bool and will be converted internally to a bool. The default is
         True.
@@ -3583,6 +3596,19 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         atol, "atol", min_val=0.0, min_inclusive=False
     )
 
+    # Validate coefficient_mask.
+    if coefficient_mask is None:
+        coefficient_mask = (True, True, True, True, True, True)
+    if not isinstance(coefficient_mask, tuple):
+        raise TypeError("coefficient_mask must be a tuple or None.")
+    if len(coefficient_mask) != 6:
+        raise ValueError("coefficient_mask must have exactly 6 elements.")
+    if not all(isinstance(elem, bool) for elem in coefficient_mask):
+        raise TypeError("All elements of coefficient_mask must be bools.")
+    if not any(coefficient_mask):
+        raise ValueError("At least one element of coefficient_mask must be True.")
+    coefficient_mask_array = np.array(coefficient_mask, dtype=bool)
+
     # Validate show_solver_progress.
     show_solver_progress = _parameter_validation.boolLike_return_bool(
         show_solver_progress, "show_solver_progress"
@@ -3620,6 +3646,11 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
         convergence_logger.info(
             f"\tWing {wing_id}: span={span:.4f}, avg_chord={avg_chord:.4f}"
         )
+
+    active_labels = ", ".join(
+        label for label, active in zip(_COEFFICIENT_LABELS, coefficient_mask) if active
+    )
+    convergence_logger.info(f"\tActive coefficients for convergence: {active_labels}")
 
     # Create iteration lists.
     wake_list: list[bool] = []
@@ -4005,12 +4036,18 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                             wake_tols,
                             wake_metrics,
                         ) = _check_coefficient_convergence(
-                            current_coeffs, coarser_wake_coeffs, rtol, atol
+                            current_coeffs,
+                            coarser_wake_coeffs,
+                            rtol,
+                            atol,
+                            mask=coefficient_mask_array,
                         )
                         convergence_logger.info(
                             "\t\t\t\t\t\tConvergence check - wake type:"
                         )
                         for i, label in enumerate(_COEFFICIENT_LABELS):
+                            if not coefficient_mask_array[i]:
+                                continue
                             convergence_logger.info(
                                 f"\t\t\t\t\t\t    {label}={current_coeffs[i]:.6e}"
                                 f", {_LOAD_LABELS[i]}={theseFinalLoads[i]:.6e}"
@@ -4019,7 +4056,10 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                                 f", tol={wake_tols[i]:.3e}"
                                 f", metric={wake_metrics[i]:.2f}"
                             )
-                        min_label = _COEFFICIENT_LABELS[int(np.argmin(wake_metrics))]
+                        masked_wake = np.where(
+                            coefficient_mask_array, wake_metrics, np.inf
+                        )
+                        min_label = _COEFFICIENT_LABELS[int(np.argmin(masked_wake))]
                         convergence_logger.info(
                             f"\t\t\t\t\t\t    Minimum metric: "
                             f"{wake_min_metric:.2f} ({min_label})"
@@ -4047,12 +4087,18 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                             length_tols,
                             length_metrics,
                         ) = _check_coefficient_convergence(
-                            current_coeffs, coarser_length_coeffs, rtol, atol
+                            current_coeffs,
+                            coarser_length_coeffs,
+                            rtol,
+                            atol,
+                            mask=coefficient_mask_array,
                         )
                         convergence_logger.info(
                             "\t\t\t\t\t\tConvergence check - wake length:"
                         )
                         for i, label in enumerate(_COEFFICIENT_LABELS):
+                            if not coefficient_mask_array[i]:
+                                continue
                             convergence_logger.info(
                                 f"\t\t\t\t\t\t    {label}={current_coeffs[i]:.6e}"
                                 f", {_LOAD_LABELS[i]}={theseFinalLoads[i]:.6e}"
@@ -4061,7 +4107,10 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                                 f", tol={length_tols[i]:.3e}"
                                 f", metric={length_metrics[i]:.2f}"
                             )
-                        min_label = _COEFFICIENT_LABELS[int(np.argmin(length_metrics))]
+                        masked_length = np.where(
+                            coefficient_mask_array, length_metrics, np.inf
+                        )
+                        min_label = _COEFFICIENT_LABELS[int(np.argmin(masked_length))]
                         convergence_logger.info(
                             f"\t\t\t\t\t\t    Minimum metric: "
                             f"{length_min_metric:.2f} ({min_label})"
@@ -4089,12 +4138,18 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                             ar_tols,
                             ar_metrics,
                         ) = _check_coefficient_convergence(
-                            current_coeffs, coarser_ar_coeffs, rtol, atol
+                            current_coeffs,
+                            coarser_ar_coeffs,
+                            rtol,
+                            atol,
+                            mask=coefficient_mask_array,
                         )
                         convergence_logger.info(
                             "\t\t\t\t\t\tConvergence check - Panel AR:"
                         )
                         for i, label in enumerate(_COEFFICIENT_LABELS):
+                            if not coefficient_mask_array[i]:
+                                continue
                             convergence_logger.info(
                                 f"\t\t\t\t\t\t    {label}={current_coeffs[i]:.6e}"
                                 f", {_LOAD_LABELS[i]}={theseFinalLoads[i]:.6e}"
@@ -4103,7 +4158,8 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                                 f", tol={ar_tols[i]:.3e}"
                                 f", metric={ar_metrics[i]:.2f}"
                             )
-                        min_label = _COEFFICIENT_LABELS[int(np.argmin(ar_metrics))]
+                        masked_ar = np.where(coefficient_mask_array, ar_metrics, np.inf)
+                        min_label = _COEFFICIENT_LABELS[int(np.argmin(masked_ar))]
                         convergence_logger.info(
                             f"\t\t\t\t\t\t    Minimum metric: "
                             f"{ar_min_metric:.2f} ({min_label})"
@@ -4131,12 +4187,18 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                             chord_tols,
                             chord_metrics,
                         ) = _check_coefficient_convergence(
-                            current_coeffs, coarser_chord_coeffs, rtol, atol
+                            current_coeffs,
+                            coarser_chord_coeffs,
+                            rtol,
+                            atol,
+                            mask=coefficient_mask_array,
                         )
                         convergence_logger.info(
                             "\t\t\t\t\t\tConvergence check - chordwise Panels:"
                         )
                         for i, label in enumerate(_COEFFICIENT_LABELS):
+                            if not coefficient_mask_array[i]:
+                                continue
                             convergence_logger.info(
                                 f"\t\t\t\t\t\t    {label}={current_coeffs[i]:.6e}"
                                 f", {_LOAD_LABELS[i]}={theseFinalLoads[i]:.6e}"
@@ -4145,7 +4207,10 @@ def analyze_unsteady_convergence_non_trapezoidal_optimized_dt(
                                 f", tol={chord_tols[i]:.3e}"
                                 f", metric={chord_metrics[i]:.2f}"
                             )
-                        min_label = _COEFFICIENT_LABELS[int(np.argmin(chord_metrics))]
+                        masked_chord = np.where(
+                            coefficient_mask_array, chord_metrics, np.inf
+                        )
+                        min_label = _COEFFICIENT_LABELS[int(np.argmin(masked_chord))]
                         convergence_logger.info(
                             f"\t\t\t\t\t\t    Minimum metric: "
                             f"{chord_min_metric:.2f} ({min_label})"
