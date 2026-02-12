@@ -1,34 +1,27 @@
 """Plot convergence of a coefficient or load from the convergence cache.
 
-Creates a 4 x 4 grid of subplots showing how the selected quantity varies with
-num_chordwise_panels refinement.
+Creates a single column of subplots (one per panel aspect ratio) showing how the
+selected quantity varies with num_chordwise_panels refinement. All wake lengths are
+overlaid on each subplot for direct comparison. Prescribed wake uses solid lines with
+circle markers, free wake uses dashed lines with triangle markers.
 
-    Rows: panel aspect ratio (coarsest to finest, top to bottom)
-    Columns 1 through 3: wake length (1, 2, 3)
-    Column 4: all wake lengths overlaid for direct comparison
-
-Each subplot shows lines for prescribed wake (solid with circle markers) and free wake
-(dashed with triangle markers). The y axis is shared within each row for easy comparison
-across wake lengths.
+The number of subplots and lines per subplot is determined entirely by what parameter
+combinations are present in the cache file.
 
 Usage:
-    python plot_convergence_cache.py <cache_file> [options]
-
-Examples:
-    python plot_convergence_cache.py convergence_cache/L170V_R180V_170Hz.json
-    python plot_convergence_cache.py convergence_cache/L170V_R180V_170Hz.json --quantity cFY
-    python plot_convergence_cache.py convergence_cache/L170V_R180V_170Hz.json --quantity FX
+    python plot_convergence_cache.py
 """
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Generator
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -36,17 +29,29 @@ import numpy as np
 COEFFICIENT_NAMES = ("cFX", "cFY", "cFZ", "cMX", "cMY", "cMZ")
 LOAD_NAMES = ("FX", "FY", "FZ", "MX", "MY", "MZ")
 _N_TO_MGF = 1.0 / 9.80665e-6
-LOAD_UNITS = ("mgf", "mgf", "mgf", "N*m", "N*m", "N*m")
-LOAD_SCALES = (_N_TO_MGF, _N_TO_MGF, _N_TO_MGF, 1.0, 1.0, 1.0)
 
-# Colors for wake length lines in the overlay column.
-WAKE_LENGTH_COLORS = {
-    1: "tab:blue",
-    2: "tab:orange",
-    3: "tab:green",
-    4: "tab:red",
-    5: "tab:purple",
-}
+_LOAD_UNITS_MGF = ("mgf", "mgf", "mgf", "N*m", "N*m", "N*m")
+_LOAD_SCALES_MGF = (_N_TO_MGF, _N_TO_MGF, _N_TO_MGF, 1.0, 1.0, 1.0)
+_LOAD_UNITS_N = ("N", "N", "N", "N*m", "N*m", "N*m")
+_LOAD_SCALES_N = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+
+# Perceptually uniform sequential colormap for wake length lines.
+# Only the middle 75% of the colormap is sampled to avoid the extreme light/dark ends.
+WAKE_LENGTH_COLORMAP = "viridis"
+_CMAP_V_MIN = 0.125
+_CMAP_V_MAX = 0.975
+
+# IQR multiplier for outlier detection when computing y-axis limits.
+_IQR_MULTIPLIER = 3.0
+
+# Experimental thrust in mgf (displayed only when plotting FX).
+_EXPERIMENTAL_THRUST_MGF = 87.0
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+CACHE_PATH = Path(__file__).parent / "convergence_cache" / "L170V_R180V_170Hz.json"
+QUANTITY = "FX"
+FORCE_UNIT_MGF = True  # True for mgf (whole numbers), False for N (scientific notation)
+# ───────────────────────────────────────────────────────────────────────────────
 
 
 @contextlib.contextmanager
@@ -128,42 +133,29 @@ def _parse_cache(data: dict) -> list[dict]:
     return records
 
 
-def _resolve_quantity(quantity_arg: str) -> tuple[str, int, str, str, float]:
-    """Resolve a quantity argument to a data key, index, display name, unit, and scale.
+def _resolve_quantity(
+    quantity_name: str,
+    force_unit_mgf: bool = True,
+) -> tuple[str, int, str, str, float]:
+    """Resolve a quantity name to a data key, index, display name, unit, and scale.
 
-    Accepts a coefficient name (e.g. "cFX"), a load name (e.g. "FX"), or an integer
-    index (0 through 5, interpreted as a coefficient index).
-
-    :param quantity_arg: Quantity name or index string.
-    :return: Tuple of (data_key, index, display_name, unit, scale) where data_key is
-        "coefficients" or "loads", unit is an empty string for coefficients, and scale
-        is a multiplicative factor applied to the raw values before plotting.
+    :param quantity_name: Coefficient name (e.g. "cFX") or load name (e.g. "FX").
+    :param force_unit_mgf: If True, forces use mgf; if False, forces use N.
+    :return: Tuple of (data_key, index, display_name, unit, scale).
     """
-    arg = quantity_arg.strip()
-
-    # Try as coefficient name.
     for i, name in enumerate(COEFFICIENT_NAMES):
-        if arg == name:
+        if quantity_name == name:
             return "coefficients", i, name, "", 1.0
 
-    # Try as load name.
-    for i, name in enumerate(LOAD_NAMES):
-        if arg == name:
-            return "loads", i, name, LOAD_UNITS[i], LOAD_SCALES[i]
+    load_units = _LOAD_UNITS_MGF if force_unit_mgf else _LOAD_UNITS_N
+    load_scales = _LOAD_SCALES_MGF if force_unit_mgf else _LOAD_SCALES_N
 
-    # Try as integer index (default to coefficient).
-    try:
-        index = int(arg)
-        if 0 <= index < len(COEFFICIENT_NAMES):
-            return "coefficients", index, COEFFICIENT_NAMES[index], "", 1.0
-    except ValueError:
-        pass
+    for i, name in enumerate(LOAD_NAMES):
+        if quantity_name == name:
+            return "loads", i, name, load_units[i], load_scales[i]
 
     all_names = ", ".join(COEFFICIENT_NAMES) + ", " + ", ".join(LOAD_NAMES)
-    raise ValueError(
-        f"Unknown quantity '{quantity_arg}'. Valid names: {all_names} or coefficient "
-        f"indices 0 through 5."
-    )
+    raise ValueError(f"Unknown quantity '{quantity_name}'. Valid names: {all_names}.")
 
 
 def _filter_records(
@@ -171,14 +163,14 @@ def _filter_records(
     panel_ar: int,
     wake_length: int,
     prescribed_wake: bool,
-) -> tuple[list[int], list[float]]:
+) -> tuple[list[int], list[dict]]:
     """Filter and sort records for a specific parameter combination.
 
     :param records: All parsed cache records.
     :param panel_ar: Panel aspect ratio to filter by.
     :param wake_length: Wake length to filter by.
     :param prescribed_wake: Whether to filter for prescribed (True) or free (False) wake.
-    :return: Tuple of (num_chordwise values, coefficient values), both sorted by
+    :return: Tuple of (num_chordwise values, filtered records), both sorted by
         num_chordwise.
     """
     filtered = [
@@ -201,7 +193,7 @@ def _plot_wake_lines(
     data_key: str,
     value_index: int,
     scale: float = 1.0,
-    color: str = "tab:blue",
+    color: str | tuple = "tab:blue",
     label_prefix: str = "",
 ) -> None:
     """Plot prescribed and free wake lines on a single axes.
@@ -243,15 +235,57 @@ def _plot_wake_lines(
         )
 
 
+def _compute_y_limits(
+    records: list[dict],
+    data_key: str,
+    value_index: int,
+    scale: float,
+) -> tuple[float, float]:
+    """Compute robust y-axis limits that always include 0 and exclude outliers.
+
+    Uses the interquartile range (IQR) method: values beyond Q1 - 1.5*IQR or
+    Q3 + 1.5*IQR are treated as outliers and excluded from the limits.
+
+    :param records: All parsed cache records.
+    :param data_key: Record key to read values from ("coefficients" or "loads").
+    :param value_index: Index within the data array to plot.
+    :param scale: Multiplicative factor applied to raw values.
+    :return: Tuple of (y_min, y_max) with a small padding margin.
+    """
+    all_y = np.array([r[data_key][value_index] * scale for r in records])
+
+    q1 = np.percentile(all_y, 25)
+    q3 = np.percentile(all_y, 75)
+    iqr = q3 - q1
+    lower_fence = q1 - _IQR_MULTIPLIER * iqr
+    upper_fence = q3 + _IQR_MULTIPLIER * iqr
+
+    inliers = all_y[(all_y >= lower_fence) & (all_y <= upper_fence)]
+    if len(inliers) == 0:
+        inliers = all_y
+
+    y_min = min(0.0, float(np.min(inliers)))
+    y_max = max(0.0, float(np.max(inliers)))
+
+    # Add a small margin so points don't sit on the axis edge.
+    margin = (y_max - y_min) * 0.05
+    return y_min - margin, y_max + margin
+
+
 def plot_convergence(
     cache_path: Path,
-    data_key: str = "coefficients",
-    value_index: int = 0,
-    display_name: str = "cFX",
-    unit: str = "",
-    scale: float = 1.0,
+    data_key: str,
+    value_index: int,
+    display_name: str,
+    unit: str,
+    scale: float,
 ) -> None:
-    """Create the 4 x 4 convergence plot grid.
+    """Create the convergence plot with one subplot per panel aspect ratio.
+
+    All wake lengths are overlaid on each subplot with distinct colors sampled from a
+    perceptually uniform sequential colormap. The number of subplots and lines is
+    determined entirely by the cache contents. All subplots share the same y-axis scale
+    (always including 0), with extreme outliers excluded from the limits.
 
     :param cache_path: Path to the convergence cache JSON file.
     :param data_key: Record key to read values from ("coefficients" or "loads").
@@ -267,22 +301,29 @@ def plot_convergence(
         print("No simulation records found in cache.")
         return
 
-    # Get unique sorted parameter values.
+    # Discover parameter values from the cache.
     panel_ars = sorted(set(r["panel_ar"] for r in records), reverse=True)
     wake_lengths = sorted(set(r["wake_length"] for r in records))
     all_chordwise = sorted(set(r["num_chordwise"] for r in records))
 
-    num_rows = min(len(panel_ars), 4)
-    # Use up to 3 individual wake length columns + 1 overlay column.
-    num_wl_cols = min(len(wake_lengths), 3)
-    num_cols = num_wl_cols + 1
+    # Build a colormap that samples only the middle 75% of the full range.
+    full_cmap = plt.get_cmap(WAKE_LENGTH_COLORMAP)
+    trimmed_colors = full_cmap(np.linspace(_CMAP_V_MIN, _CMAP_V_MAX, 256))
+    cmap = mcolors.LinearSegmentedColormap.from_list("trimmed", trimmed_colors)
+    wl_norm = mcolors.Normalize(vmin=min(wake_lengths), vmax=max(wake_lengths))
+
+    # Compute shared y-axis limits (includes 0, excludes outliers).
+    y_min, y_max = _compute_y_limits(records, data_key, value_index, scale)
+
+    num_rows = len(panel_ars)
+    y_label = f"{display_name} ({unit})" if unit else display_name
 
     fig, axes = plt.subplots(
         num_rows,
-        num_cols,
-        figsize=(5 * num_cols, 4 * num_rows),
+        1,
+        figsize=(14, 4 * num_rows),
         squeeze=False,
-        sharey="row",
+        sharey=True,
     )
     fig.suptitle(
         f"Convergence of {display_name}  \u2014  {cache_path.stem}",
@@ -291,39 +332,39 @@ def plot_convergence(
         y=0.98,
     )
 
-    y_label = f"{display_name} ({unit})" if unit else display_name
+    # Experimental thrust line (only for FX).
+    show_experimental = display_name == "FX"
+    if show_experimental:
+        exp_value = (
+            _EXPERIMENTAL_THRUST_MGF
+            if unit == "mgf"
+            else _EXPERIMENTAL_THRUST_MGF * 9.80665e-6
+        )
 
-    for row, panel_ar in enumerate(panel_ars[:num_rows]):
-        # Individual wake length columns.
-        for col, wake_length in enumerate(wake_lengths[:num_wl_cols]):
-            ax = axes[row, col]
-            _plot_wake_lines(
-                ax,
-                records,
-                panel_ar,
-                wake_length,
-                data_key,
-                value_index,
-                scale=scale,
-                color="tab:blue",
+    for row, panel_ar in enumerate(panel_ars):
+        ax = axes[row, 0]
+
+        # Plot experimental band and line first so they sit behind the data.
+        if show_experimental:
+            ax.axhspan(
+                exp_value * 0.9,
+                exp_value * 1.1,
+                color="red",
+                alpha=0.1,
+                label=f"\u00b110% range",
+            )
+            ax.axhline(
+                exp_value,
+                color="red",
+                linewidth=1.5,
+                linestyle="-",
+                label=f"Experimental ({_EXPERIMENTAL_THRUST_MGF:.0f} mgf)",
             )
 
-            # Formatting.
-            ax.set_title(f"AR = {panel_ar}, Wake Length = {wake_length}", fontsize=10)
-            ax.set_xlabel("Num Chordwise Panels")
-            if col == 0:
-                ax.set_ylabel(y_label)
-            ax.grid(True, alpha=0.3)
-            ax.set_xticks(all_chordwise)
-            if row == 0 and col == 0:
-                ax.legend(fontsize=8)
-
-        # Overlay column: all wake lengths on one plot.
-        ax_overlay = axes[row, num_wl_cols]
-        for wake_length in wake_lengths[:num_wl_cols]:
-            color = WAKE_LENGTH_COLORS.get(wake_length, "tab:gray")
+        for wake_length in wake_lengths:
+            color = cmap(wl_norm(wake_length))
             _plot_wake_lines(
-                ax_overlay,
+                ax,
                 records,
                 panel_ar,
                 wake_length,
@@ -334,60 +375,64 @@ def plot_convergence(
                 label_prefix=f"WL={wake_length}, ",
             )
 
-        ax_overlay.set_title(f"AR = {panel_ar}, All Wake Lengths", fontsize=10)
-        ax_overlay.set_xlabel("Num Chordwise Panels")
-        ax_overlay.grid(True, alpha=0.3)
-        ax_overlay.set_xticks(all_chordwise)
-        if row == 0:
-            ax_overlay.legend(fontsize=7, ncol=2)
+        ax.set_title(f"Panel AR = {panel_ar}", fontsize=11)
+        ax.set_xlabel("Num Chordwise Panels")
+        ax.set_ylabel(y_label)
+        ax.grid(True, alpha=0.3)
+        ax.set_xticks(all_chordwise)
 
-    # Use scientific E notation on y axes when plotting loads.
-    if data_key == "loads":
+    # Apply shared y-axis limits (includes 0, outliers excluded).
+    axes[0, 0].set_ylim(y_min, y_max)
+
+    # Format y-axis ticks based on the unit.
+    if unit in ("N", "N*m"):
         for ax in axes.flat:
             ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2e"))
+    elif unit == "mgf":
+        for ax in axes.flat:
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:.0f}"))
 
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    # Simulation legend: placed below the figure, 4 items per column.
+    all_handles, all_labels = axes[0, 0].get_legend_handles_labels()
+    if show_experimental:
+        # The first 2 handles are the band and line; the rest are simulation data.
+        exp_handles = all_handles[:2]
+        exp_labels = all_labels[:2]
+        sim_handles = all_handles[2:]
+        sim_labels = all_labels[2:]
+    else:
+        sim_handles = all_handles
+        sim_labels = all_labels
+
+    sim_ncol = max(1, math.ceil(len(sim_handles) / 4))
+    sim_legend = fig.legend(
+        sim_handles,
+        sim_labels,
+        loc="lower center",
+        ncol=sim_ncol,
+        fontsize=8,
+        bbox_to_anchor=(0.5, 0.0),
+    )
+
+    # Experimental legend: separate, placed just above the simulation legend.
+    if show_experimental:
+        fig.legend(
+            exp_handles,
+            exp_labels,
+            loc="lower center",
+            ncol=2,
+            fontsize=8,
+            bbox_to_anchor=(0.5, 0.06),
+        )
+        fig.add_artist(sim_legend)
+
+    fig.tight_layout(rect=[0.05, 0.14, 0.95, 0.96])
     plt.show()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Plot convergence of a coefficient or load from the convergence cache."
-    )
-    parser.add_argument(
-        "cache_file",
-        type=Path,
-        help="Path to the convergence cache JSON file.",
-    )
-    parser.add_argument(
-        "--quantity",
-        default="cFX",
-        help=(
-            "Quantity to plot. Accepts a coefficient name "
-            "(cFX, cFY, cFZ, cMX, cMY, cMZ), a load name "
-            "(FX, FY, FZ, MX, MY, MZ), or a coefficient index "
-            "(0 through 5). Default: cFX."
-        ),
-    )
-    args = parser.parse_args()
-
-    cache_path = Path(args.cache_file)
-    if not cache_path.exists():
-        print(f"Cache file not found: {cache_path}")
-        sys.exit(1)
-
-    data_key, value_index, display_name, unit, scale = _resolve_quantity(args.quantity)
-    print(f"Plotting {display_name} from {cache_path.name}...")
-
-    plot_convergence(cache_path, data_key, value_index, display_name, unit, scale)
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main()
-    else:
-        _default_cache = (
-            Path(__file__).parent / "convergence_cache" / "L170V_R180V_170Hz.json"
-        )
-        print(f"Plotting cFX from {_default_cache.name}...")
-        plot_convergence(_default_cache)
+    data_key, value_index, display_name, unit, scale = _resolve_quantity(
+        QUANTITY, force_unit_mgf=FORCE_UNIT_MGF
+    )
+    print(f"Plotting {display_name} from {CACHE_PATH.name}...")
+    plot_convergence(CACHE_PATH, data_key, value_index, display_name, unit, scale)
