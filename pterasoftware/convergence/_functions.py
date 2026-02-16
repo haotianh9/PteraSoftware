@@ -256,13 +256,12 @@ def _visualize_wing_mesh(
         f"Mesh visualization: {total_panels} panels, AR={avg_ar:.2f}"
     )
 
-    # Save if requested
-    if save_path is not None:
-        plotter.screenshot(save_path)
-        convergence_logger.info(f"Saved mesh visualization to {save_path}")
-
-    # Show if requested
+    # Show and/or save
     if show:
-        plotter.show()
+        plotter.show(screenshot=save_path)
     else:
+        plotter.screenshot(save_path)
         plotter.close()
+
+    if save_path is not None:
+        convergence_logger.info(f"Saved mesh visualization to {save_path}")
