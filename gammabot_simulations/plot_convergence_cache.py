@@ -427,6 +427,11 @@ def plot_convergence(
         fig.add_artist(sim_legend)
 
     fig.tight_layout(rect=[0.05, 0.14, 0.95, 0.96])
+
+    save_path = cache_path.parent.parent / "convergence_plot.png"
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    print(f"Saved plot to {save_path}")
+
     plt.show()
 
 
