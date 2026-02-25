@@ -19,23 +19,16 @@ SHARED_PARAMS = {
 MESH_PARAMS = {
     "coarse": {
         "num_flaps": 2,
-        "num_chordwise_panels": 4,
-        "num_spanwise_sections": 8,
-        "delta_time": 0.000272,
-        "prescribed_wake": True,
+        "num_chordwise_panels": 12,
+        "num_spanwise_sections": 13,
+        "delta_time": 7.261728395061729e-05,
+        "prescribed_wake": False,
     },
     "fine": {
         "num_flaps": 3,
-        "num_chordwise_panels": 8,
-        "num_spanwise_sections": 16,
-        "delta_time": 0.000130,
-        "prescribed_wake": True,
-    },
-    "extra-fine": {
-        "num_flaps": 3,
-        "num_chordwise_panels": 12,
-        "num_spanwise_sections": 24,
-        "delta_time": 0.000087,
+        "num_chordwise_panels": 13,
+        "num_spanwise_sections": 14,
+        "delta_time": 6.68409090909091e-05,
         "prescribed_wake": False,
     },
 }

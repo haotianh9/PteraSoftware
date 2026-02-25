@@ -1,21 +1,19 @@
 """Run GammaBot UVLM simulations with configurable parameters.
 
-Usage:     python run_simulation.py <config_name> [--fine | --extra-fine | --coarse-and-
-fine |         --all-meshes] [--no-show] [--tag TAG]     python run_simulation.py --all
---no-show [--fine | --extra-fine | --coarse-and-fine |         --all-meshes] [--tag TAG]
-[--sequential] [--workers N]     python run_simulation.py --list
+Usage:     python run_simulation.py <config_name> [--fine | --coarse-and-fine]
+[--no-show] [--tag TAG]     python run_simulation.py --all --no-show
+[--fine | --coarse-and-fine] [--tag TAG] [--sequential] [--workers N]
+python run_simulation.py --list
 
 Examples:     python run_simulation.py L0V_R150V_170Hz     python run_simulation.py
-L170V_R180V_170Hz --fine --tag baseline     python run_simulation.py L170V_R180V_170Hz
---extra-fine --tag free_wake     python run_simulation.py --all --no-show --tag baseline
-python run_simulation.py --all --no-show --sequential     python run_simulation.py --all
---no-show --workers 2     python run_simulation.py --all --coarse-and-fine --no-show
---tag full_study     python run_simulation.py --all --all-meshes --no-show --tag
-comprehensive     python run_simulation.py --list
+L170V_R180V_170Hz --fine --tag baseline     python run_simulation.py --all --no-show
+--tag baseline     python run_simulation.py --all --no-show --sequential
+python run_simulation.py --all --no-show --workers 2     python run_simulation.py --all
+--coarse-and-fine --no-show --tag full_study     python run_simulation.py --list
 
 Results are saved to: simulation_results/<run_id>/<config_name>/<mesh_type>/ where
 run_id is either the --tag value or a timestamp (YYYY-MM-DD_HH-MM-SS), and mesh_type is
-one of Coarse, Fine, or Extra-Fine.
+one of Coarse or Fine.
 
 Parallel Execution:     --all runs simulations in parallel by default (5 workers max).
 Use --sequential to disable parallel execution.     Use --workers N to override the
@@ -49,7 +47,7 @@ class SimulationTask:
     """Represents a single simulation task to be executed."""
 
     config_name: str
-    mesh_type: str  # "coarse", "fine", or "extra-fine"
+    mesh_type: str  # "coarse" or "fine"
     run_id: str
     show_results: bool
 
@@ -251,7 +249,7 @@ def run_simulation(
 
     :param config_name: Name of the configuration to use.
     :param run_id: Identifier for this run (tag or timestamp). Used in output path.
-    :param mesh_type: Mesh type to use ("coarse", "fine", or "extra-fine").
+    :param mesh_type: Mesh type to use ("coarse" or "fine").
     :param show_results: If True, display results interactively. If False, doesn't show
         plots and automatically closes renders after 1 second.
     :return: None
@@ -417,7 +415,7 @@ def run_simulation(
     solver.run(prescribed_wake=prescribed_wake)
 
     # Create output directory: simulation_results/<run_id>/<config_name>/<mesh_dir>/
-    # Convert mesh_type to directory name (e.g., "extra-fine" -> "Extra-Fine")
+    # Convert mesh_type to directory name (e.g., "coarse" -> "Coarse")
     mesh_dir = mesh_type.title().replace(" ", "-")
     output_dir = (
         Path(__file__).parent / "simulation_results" / run_id / config_name / mesh_dir
@@ -670,19 +668,9 @@ def main():
         help="Use fine mesh settings instead of coarse",
     )
     mesh_group.add_argument(
-        "--extra-fine",
-        action="store_true",
-        help="Use extra-fine mesh settings (free wake)",
-    )
-    mesh_group.add_argument(
         "--coarse-and-fine",
         action="store_true",
         help="Run both coarse and fine mesh for each configuration",
-    )
-    mesh_group.add_argument(
-        "--all-meshes",
-        action="store_true",
-        help="Run coarse, fine, and extra-fine mesh for each configuration",
     )
 
     parser.add_argument(
@@ -752,14 +740,9 @@ def main():
     run_id = args.tag if args.tag else datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # Determine which mesh types to run
-    all_meshes = getattr(args, "all_meshes", False)
     coarse_and_fine = getattr(args, "coarse_and_fine", False)
-    if all_meshes:
-        mesh_settings = ["coarse", "fine", "extra-fine"]
-    elif coarse_and_fine:
+    if coarse_and_fine:
         mesh_settings = ["coarse", "fine"]
-    elif args.extra_fine:
-        mesh_settings = ["extra-fine"]
     elif args.fine:
         mesh_settings = ["fine"]
     else:

@@ -336,9 +336,9 @@ def run_convergence_analysis(
         num_chordwise_panels_bounds=chordwise_bounds,
         visualize_meshes=visualize,
         visualization_dir=vis_dir,
-        coefficient_mask=(True, False, False, False, False, False),
-        rtol=0.001,
-        atol=0.01,
+        coefficient_mask=(True, False, True, False, True, False),
+        rtol=0.05,
+        atol=0.1,
         cache_file=cache_file,
     )
 
