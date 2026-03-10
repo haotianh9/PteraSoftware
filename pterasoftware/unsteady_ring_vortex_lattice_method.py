@@ -1802,6 +1802,11 @@ class UnsteadyRingVortexLatticeMethodSolver:
         # where delta_Gamma = Gamma_{i, j} - Gamma_{i-1, j}
 
         # Get velocities induced by bound chordwise vortex segments and wake.
+        # REFACTOR: Update _calculate_chordwise_induced_velocity and
+        # _calculate_wake_induced_velocity to include their Biot-Savart calls in
+        # the main singularity accounting, similar to how _calculate_loads_joukowski
+        # passes bound_singularity_counts and wake_singularity_counts through
+        # calculate_solution_velocity.
         stackChordwiseInducedVelocity_GP1__E = (
             self._calculate_chordwise_induced_velocity()
         )
@@ -2145,23 +2150,64 @@ class UnsteadyRingVortexLatticeMethodSolver:
         (streamwise) segments of all bound RingVortices. This corresponds to U_bc in
         Lambert (2015) Eq. 2.15 and w_ind in Katz and Plotkin Eq. 13.152.
 
+        When an image surface is defined on the OperatingPoint, the returned velocity
+        also includes the induced velocity from image bound chordwise vortex segments
+        reflected across that surface.
+
         :return: A (num_panels, 3) ndarray of floats for the induced velocity (in the
             first Airplane's geometry axes, observed from the Earth frame) at each
             collocation point. The units are in meters per second.
         """
-        return cast(
+        singularity_counts = np.zeros(4, dtype=np.int64)
+
+        stackChordwiseVInd_GP1__E = cast(
             np.ndarray,
-            _aerodynamics.collapsed_velocities_from_ring_vortices_chordwise_segments(
+            _aerodynamics_functions.collapsed_velocities_from_ring_vortices_chordwise_segments(
                 stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
                 stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
                 stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
                 stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
                 stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
                 strengths=self._current_bound_vortex_strengths,
+                r_c0s=self._currentStackBoundRc0s,
+                singularity_counts=singularity_counts,
                 ages=None,
                 nu=self.current_operating_point.nu,
             ),
         )
+
+        # Add the image contribution if an image surface is defined.
+        surfaceReflect_T_act_GP1_CgP1 = (
+            self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
+        )
+        if surfaceReflect_T_act_GP1_CgP1 is not None:
+            stackReflectedCpp_GP1_CgP1 = _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                self.stackCpp_GP1_CgP1,
+                has_point=True,
+            )
+            stackImageChordwiseVInd_GP1__E = cast(
+                np.ndarray,
+                _aerodynamics_functions.collapsed_velocities_from_ring_vortices_chordwise_segments(
+                    stackP_GP1_CgP1=stackReflectedCpp_GP1_CgP1,
+                    stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
+                    stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
+                    stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
+                    stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
+                    strengths=self._current_bound_vortex_strengths,
+                    r_c0s=self._currentStackBoundRc0s,
+                    singularity_counts=singularity_counts,
+                    ages=None,
+                    nu=self.current_operating_point.nu,
+                ),
+            )
+            stackChordwiseVInd_GP1__E += _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                stackImageChordwiseVInd_GP1__E,
+                has_point=False,
+            )
+
+        return stackChordwiseVInd_GP1__E
 
     def _calculate_wake_induced_velocity(self) -> np.ndarray:
         """Computes velocity at collocation points from wake vortices.
@@ -2170,6 +2216,10 @@ class UnsteadyRingVortexLatticeMethodSolver:
         This corresponds to U_w in Lambert (2015) Eq. 2.15, and w_w in Katz and Plotkin
         Eq. 13.152.
 
+        When an image surface is defined on the OperatingPoint, the returned velocity
+        also includes the induced velocity from image wake RingVortices reflected across
+        that surface.
+
         :return: A (num_panels, 3) ndarray of floats for the wake induced velocity (in
             the first Airplane's geometry axes, observed from the Earth frame) at each
             collocation point. The units are meters per second.
@@ -2177,19 +2227,56 @@ class UnsteadyRingVortexLatticeMethodSolver:
         if self._current_step < 1:
             return np.zeros((self.num_panels, 3), dtype=float)
 
-        return cast(
+        singularity_counts = np.zeros(4, dtype=np.int64)
+
+        stackWakeVInd_GP1__E = cast(
             np.ndarray,
-            _aerodynamics.collapsed_velocities_from_ring_vortices(
+            _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
                 stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
                 stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
                 stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
                 stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
                 stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
                 strengths=self._current_wake_vortex_strengths,
+                r_c0s=self._currentStackWakeRc0s,
+                singularity_counts=singularity_counts,
                 ages=self._current_wake_vortex_ages,
                 nu=self.current_operating_point.nu,
             ),
         )
+
+        # Add the image contribution if an image surface is defined.
+        surfaceReflect_T_act_GP1_CgP1 = (
+            self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
+        )
+        if surfaceReflect_T_act_GP1_CgP1 is not None:
+            stackReflectedCpp_GP1_CgP1 = _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                self.stackCpp_GP1_CgP1,
+                has_point=True,
+            )
+            stackImageWakeVInd_GP1__E = cast(
+                np.ndarray,
+                _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
+                    stackP_GP1_CgP1=stackReflectedCpp_GP1_CgP1,
+                    stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
+                    stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
+                    stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
+                    stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
+                    strengths=self._current_wake_vortex_strengths,
+                    r_c0s=self._currentStackWakeRc0s,
+                    singularity_counts=singularity_counts,
+                    ages=self._current_wake_vortex_ages,
+                    nu=self.current_operating_point.nu,
+                ),
+            )
+            stackWakeVInd_GP1__E += _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                stackImageWakeVInd_GP1__E,
+                has_point=False,
+            )
+
+        return stackWakeVInd_GP1__E
 
     def _calculate_local_flow_directions(
         self,
