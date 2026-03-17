@@ -161,3 +161,6 @@ Draw.webp
 
 # These are the Claude's documentation files to ignore.
 /docs/CLAUDE_*.md
+
+# This folder contains simulation data to ignore.
+/coupled_gammabot_simulations/
