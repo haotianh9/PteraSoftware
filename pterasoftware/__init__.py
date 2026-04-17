@@ -41,6 +41,14 @@ save: Saves a Ptera Software object to a JSON file.
 
 set_up_logging: Configures logging for the pterasoftware package that is compatible with
 TQDM progress bars.
+
+**Backend Configuration (Issue #140):**
+
+get_aerodynamics_backend: Get currently configured aerodynamics backend.
+
+set_aerodynamics_backend: Switch aerodynamics backend at runtime.
+
+get_backend_info: Get detailed backend configuration information.
 """
 
 # Eager imports: core modules always needed to define simulations.
@@ -64,6 +72,16 @@ _LAZY_CALLABLES = {
     "load": ("pterasoftware._serialization", "load"),
     "save": ("pterasoftware._serialization", "save"),
     "set_up_logging": ("pterasoftware._logging", "set_up_logging"),
+    # Backend configuration API (Issue #140)
+    "get_aerodynamics_backend": (
+        "pterasoftware._aerodynamics_functions",
+        "get_aerodynamics_backend",
+    ),
+    "set_aerodynamics_backend": (
+        "pterasoftware._aerodynamics_functions",
+        "set_aerodynamics_backend",
+    ),
+    "get_backend_info": ("pterasoftware._aerodynamics_functions", "get_backend_info"),
 }
 
 

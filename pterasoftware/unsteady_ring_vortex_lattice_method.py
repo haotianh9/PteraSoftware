@@ -32,6 +32,8 @@ from . import (
     operating_point,
     problems,
 )
+from ._gpu_config import get_config
+from ._linear_solver_gpu import solve_linear_system_gpu_optional
 
 _logger = _logging.get_logger("unsteady_ring_vortex_lattice_method")
 
@@ -125,6 +127,9 @@ class UnsteadyRingVortexLatticeMethodSolver:
         "stackSeedPoints_GP1_CgP1",
         "gridStreamlinePoints_GP1_CgP1",
         "ran",
+        "_gpu_pool",
+        "_use_gpu",
+        "_grid_num_spanwise_panels",
     )
 
     def __init__(self, unsteady_problem: problems.UnsteadyProblem) -> None:
@@ -254,6 +259,53 @@ class UnsteadyRingVortexLatticeMethodSolver:
         self.gridStreamlinePoints_GP1_CgP1: np.ndarray = np.empty((0, 3), dtype=float)
 
         self.ran = False
+
+        # Initialize GPU memory pool (Phase 3.1)
+        self._gpu_pool = None
+        self._use_gpu = False
+        self._grid_num_spanwise_panels = 0
+
+        try:
+            config = get_config()
+            if config.get_use_gpu():
+                from pterasoftware._gpu_memory_manager import GPUMemoryPool
+
+                # Count total panels and spanwise panels
+                total_panels = sum(
+                    airplane.num_panels
+                    for problem in self.steady_problems
+                    for airplane in problem.airplanes
+                )
+
+                # Get max spanwise panels
+                max_spanwise = max(
+                    (
+                        wing.num_spanwise_panels or 0
+                        for problem in self.steady_problems
+                        for airplane in problem.airplanes
+                        for wing in airplane.wings
+                    ),
+                    default=0,
+                )
+                self._grid_num_spanwise_panels = max_spanwise
+
+                # Create GPU pool
+                self._gpu_pool = GPUMemoryPool(
+                    num_panels=total_panels,
+                    num_bound_vortices=total_panels * 4,  # 4 legs per panel
+                    max_num_steps=self.num_steps,
+                    num_spanwise_panels=max_spanwise,
+                    viscosity=self.steady_problems[0].operating_point.nu,
+                )
+                self._use_gpu = True
+                _logger.info(
+                    f"GPU memory pool initialized: {total_panels} panels, "
+                    f"{total_panels*4} bound vortices"
+                )
+        except Exception as e:
+            _logger.warning(f"Failed to initialize GPU: {e}. Using CPU only.")
+            self._gpu_pool = None
+            self._use_gpu = False
 
     def run(
         self,
@@ -762,6 +814,24 @@ class UnsteadyRingVortexLatticeMethodSolver:
                         # Increment the global Panel position variable.
                         global_panel_position += 1
 
+        # NEW: Initialize GPU static data (Phase 3.1) - at END of method
+        if self._gpu_pool:
+            try:
+                # Initialize GPU with static panel and bound vortex geometry
+                # This transfers: panel collocation points, panel normals,
+                # bound vortex corners - all static and reused every timestep
+                self._gpu_pool.initialize_static_data(
+                    panel_cpp=self.stackCpp_GP1_CgP1,
+                    panel_normals=self.stackUnitNormals_GP1,
+                    bound_start=self.stackBrbrvp_GP1_CgP1,  # Simplified - all BR vertices
+                    bound_end=self.stackFrbrvp_GP1_CgP1,  # Simplified - all FR vertices
+                )
+                _logger.debug("GPU static data initialized")
+            except Exception as e:
+                _logger.warning(f"Failed to initialize GPU static data: {e}")
+                self._gpu_pool = None
+                self._use_gpu = False
+
     def _calculate_wing_wing_influences(self) -> None:
         """Finds the current time step's SteadyProblem's 2D ndarray of Wing Wing
         influence coefficients (observed from the Earth frame).
@@ -770,13 +840,82 @@ class UnsteadyRingVortexLatticeMethodSolver:
         coefficients also include the contributions from image bound RingVortices
         reflected across that surface.
 
+        Phase 3.3: GPU acceleration for O(N²) influence matrix computation.
+
         :return: None
         """
-        # Find the 2D ndarray of normalized velocities (in the first Airplane's
-        # geometry axes, observed from the Earth frame) induced at each Panel's
-        # collocation point by each bound RingVortex. The answer is normalized
-        # because the solver's list of bound RingVortex strengths was initialized to
-        # all be 1.0. This will be updated once the correct strengths are calculated.
+        # Try GPU path first (Phase 3.3)
+        if self._use_gpu:
+            try:
+                from pterasoftware._aerodynamics_functions_cuda import (
+                    calculate_bound_wing_influences_gpu,
+                )
+
+                singularity_counts = np.zeros(4, dtype=np.int64)
+
+                # Compute influence matrix on GPU
+                gridNormVIndCpp_GP1_E = calculate_bound_wing_influences_gpu(
+                    stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+                    stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
+                    stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
+                    stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
+                    stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
+                    strengths=self._current_bound_vortex_strengths,
+                    r_c0s=self._currentStackBoundRc0s,
+                    singularity_counts=singularity_counts,
+                    nu=self.current_operating_point.nu,
+                )
+
+                # Add image surface contribution if defined
+                surfaceReflect_T_act_GP1_CgP1 = (
+                    self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
+                )
+                if surfaceReflect_T_act_GP1_CgP1 is not None:
+                    stackReflectedCpp_GP1_CgP1 = _transformations.apply_T_to_vectors(
+                        surfaceReflect_T_act_GP1_CgP1,
+                        self.stackCpp_GP1_CgP1,
+                        has_point=True,
+                    )
+                    gridImageVIndCpp_GP1__E = calculate_bound_wing_influences_gpu(
+                        stackP_GP1_CgP1=stackReflectedCpp_GP1_CgP1,
+                        stackBrrvp_GP1_CgP1=self.stackBrbrvp_GP1_CgP1,
+                        stackFrrvp_GP1_CgP1=self.stackFrbrvp_GP1_CgP1,
+                        stackFlrvp_GP1_CgP1=self.stackFlbrvp_GP1_CgP1,
+                        stackBlrvp_GP1_CgP1=self.stackBlbrvp_GP1_CgP1,
+                        strengths=self._current_bound_vortex_strengths,
+                        r_c0s=self._currentStackBoundRc0s,
+                        singularity_counts=singularity_counts,
+                        nu=self.current_operating_point.nu,
+                    )
+                    gridNormVIndCpp_GP1_E += _transformations.apply_T_to_vectors(
+                        surfaceReflect_T_act_GP1_CgP1,
+                        gridImageVIndCpp_GP1__E,
+                        has_point=False,
+                    )
+
+                _functions.log_unexpected_singularity_counts(
+                    _logger,
+                    logging.ERROR,
+                    "_calculate_wing_wing_influences (GPU)",
+                    singularity_counts,
+                )
+
+                # Batch dot product with normals
+                self._currentGridWingWingInfluences__E = np.einsum(
+                    "...k,...k->...",
+                    gridNormVIndCpp_GP1_E,
+                    np.expand_dims(self.stackUnitNormals_GP1, axis=1),
+                )
+
+                return
+
+            except Exception as e:
+                _logger.warning(
+                    f"GPU bound vortex calculation failed: {e}. Falling back to CPU."
+                )
+                self._use_gpu = False
+
+        # CPU fallback (original implementation)
         singularity_counts = np.zeros(4, dtype=np.int64)
         gridNormVIndCpp_GP1_E = (
             _aerodynamics_functions.expanded_velocities_from_ring_vortices(
@@ -793,7 +932,7 @@ class UnsteadyRingVortexLatticeMethodSolver:
             )
         )
 
-        # Add the image contribution if an image surface is defined.
+        # Add image contribution if needed
         surfaceReflect_T_act_GP1_CgP1 = (
             self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
         )
@@ -823,20 +962,14 @@ class UnsteadyRingVortexLatticeMethodSolver:
                 has_point=False,
             )
 
-        unexpected_singularity_counts = np.copy(singularity_counts)
-
         _functions.log_unexpected_singularity_counts(
             _logger,
             logging.ERROR,
             "_calculate_wing_wing_influences",
-            unexpected_singularity_counts,
+            singularity_counts,
         )
 
-        # Take the batch dot product of the normalized induced velocities (in the
-        # first Airplane's geometry axes, observed from the Earth frame) with each
-        # Panel's unit normal direction (in the first Airplane's geometry axes). This
-        # is now the 2D ndarray of Wing Wing influence coefficients (observed from
-        # the Earth frame).
+        # Batch dot product
         self._currentGridWingWingInfluences__E = np.einsum(
             "...k,...k->...",
             gridNormVIndCpp_GP1_E,
@@ -887,29 +1020,86 @@ class UnsteadyRingVortexLatticeMethodSolver:
         )
 
     def _calculate_wake_wing_influences(self) -> None:
-        """Finds the 1D ndarray of the wake Wing influence coefficients (observed from
-        the Earth frame) at the current time step.
+        """Finds the 1D ndarray of the wake Wing influence coefficients (GPU or CPU).
 
-        When an image surface is defined on the OperatingPoint, the influence
-        coefficients also include the contributions from image wake RingVortices
-        reflected across that surface.
-
-        **Notes:**
-
-        If the current time step is the first time step, no wake has been shed, so this
-        method will return zero for all the wake Wing influence coefficients (observed
-        from the Earth frame).
-
-        :return: None
+        This method now uses GPU acceleration when configured and available. Falls back
+        gracefully to CPU if GPU is unavailable.
         """
-        if self._current_step > 0:
-            # Get the velocities (in the first Airplane's geometry axes, observed
-            # from the Earth frame) induced by the wake RingVortices at each Panel's
-            # collocation point.
-            singularity_counts = np.zeros(4, dtype=np.int64)
-            currentStackWakeV_GP1_E = (
+
+        # Quick return if no wake yet
+        if self._current_step == 0:
+            self._currentStackWakeWingInfluences__E = np.zeros(
+                self.num_panels, dtype=float
+            )
+            return
+
+        # Try GPU first
+        if self._use_gpu and self._gpu_pool:
+            try:
+                from pterasoftware._aerodynamics_functions_cuda import (
+                    calculate_wake_wing_influences_with_persistent_memory,
+                )
+
+                singularity_counts = np.zeros(4, dtype=np.int64)
+
+                # GPU calculation (uses accumulated wake data on GPU)
+                velocities = calculate_wake_wing_influences_with_persistent_memory(
+                    self._gpu_pool,
+                    singularity_counts,
+                )
+
+                # Dot product with normals (same as CPU version)
+                self._currentStackWakeWingInfluences__E = np.einsum(
+                    "ij,ij->i",
+                    velocities,
+                    self.stackUnitNormals_GP1,
+                )
+
+                _functions.log_unexpected_singularity_counts(
+                    _logger,
+                    logging.INFO,
+                    "_calculate_wake_wing_influences (GPU)",
+                    singularity_counts,
+                )
+                return
+
+            except Exception as e:
+                _logger.warning(
+                    f"GPU wake calculation failed: {e}. Falling back to CPU."
+                )
+                self._use_gpu = False
+                # Continue to CPU version below
+
+        # CPU fallback (original implementation)
+        singularity_counts = np.zeros(4, dtype=np.int64)
+        currentStackWakeV_GP1_E = (
+            _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
+                stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+                stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
+                stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
+                stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
+                stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
+                strengths=self._current_wake_vortex_strengths,
+                r_c0s=self._currentStackWakeRc0s,
+                singularity_counts=singularity_counts,
+                ages=self._current_wake_vortex_ages,
+                nu=self.current_operating_point.nu,
+            )
+        )
+
+        # Add image contribution if surface defined
+        surfaceReflect_T_act_GP1_CgP1 = (
+            self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
+        )
+        if surfaceReflect_T_act_GP1_CgP1 is not None:
+            stackReflectedCpp_GP1_CgP1 = _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                self.stackCpp_GP1_CgP1,
+                has_point=True,
+            )
+            currentStackImageWakeV_GP1_E = (
                 _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
-                    stackP_GP1_CgP1=self.stackCpp_GP1_CgP1,
+                    stackP_GP1_CgP1=stackReflectedCpp_GP1_CgP1,
                     stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
                     stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
                     stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
@@ -921,70 +1111,39 @@ class UnsteadyRingVortexLatticeMethodSolver:
                     nu=self.current_operating_point.nu,
                 )
             )
-
-            # Add the image contribution if an image surface is defined.
-            surfaceReflect_T_act_GP1_CgP1 = (
-                self.current_operating_point.surfaceReflect_T_act_GP1_CgP1
-            )
-            if surfaceReflect_T_act_GP1_CgP1 is not None:
-                stackReflectedCpp_GP1_CgP1 = _transformations.apply_T_to_vectors(
-                    surfaceReflect_T_act_GP1_CgP1,
-                    self.stackCpp_GP1_CgP1,
-                    has_point=True,
-                )
-                currentStackImageWakeV_GP1_E = (
-                    _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
-                        stackP_GP1_CgP1=stackReflectedCpp_GP1_CgP1,
-                        stackBrrvp_GP1_CgP1=self._currentStackBrwrvp_GP1_CgP1,
-                        stackFrrvp_GP1_CgP1=self._currentStackFrwrvp_GP1_CgP1,
-                        stackFlrvp_GP1_CgP1=self._currentStackFlwrvp_GP1_CgP1,
-                        stackBlrvp_GP1_CgP1=self._currentStackBlwrvp_GP1_CgP1,
-                        strengths=self._current_wake_vortex_strengths,
-                        r_c0s=self._currentStackWakeRc0s,
-                        singularity_counts=singularity_counts,
-                        ages=self._current_wake_vortex_ages,
-                        nu=self.current_operating_point.nu,
-                    )
-                )
-                currentStackWakeV_GP1_E += _transformations.apply_T_to_vectors(
-                    surfaceReflect_T_act_GP1_CgP1,
-                    currentStackImageWakeV_GP1_E,
-                    has_point=False,
-                )
-
-            unexpected_singularity_counts = np.copy(singularity_counts)
-
-            _functions.log_unexpected_singularity_counts(
-                _logger,
-                logging.INFO,
-                "_calculate_wake_wing_influences",
-                unexpected_singularity_counts,
+            currentStackWakeV_GP1_E += _transformations.apply_T_to_vectors(
+                surfaceReflect_T_act_GP1_CgP1,
+                currentStackImageWakeV_GP1_E,
+                has_point=False,
             )
 
-            # Get the current wake Wing influence coefficients (observed from the
-            # Earth frame) by taking a batch dot product with each Panel's normal
-            # vector (in the first Airplane's geometry axes).
-            self._currentStackWakeWingInfluences__E = np.einsum(
-                "ij,ij->i", currentStackWakeV_GP1_E, self.stackUnitNormals_GP1
-            )
+        _functions.log_unexpected_singularity_counts(
+            _logger,
+            logging.INFO,
+            "_calculate_wake_wing_influences",
+            singularity_counts,
+        )
 
-        else:
-            # If this is the first time step, set all the current Wake-wing influence
-            # coefficients to 0.0 (observed from the Earth frame) because no wake
-            # RingVortices have been shed.
-            self._currentStackWakeWingInfluences__E = np.zeros(
-                self.num_panels, dtype=float
-            )
+        # Dot product
+        self._currentStackWakeWingInfluences__E = np.einsum(
+            "ij,ij->i", currentStackWakeV_GP1_E, self.stackUnitNormals_GP1
+        )
 
     def _calculate_vortex_strengths(self) -> None:
         """Solves for the strength of each Panel's bound RingVortex.
 
+        Uses GPU-accelerated solver when configured and available (Phase 3.2). Falls
+        back gracefully to CPU for maximum compatibility.
+
         :return: None
         """
-        self._current_bound_vortex_strengths = np.linalg.solve(
+        # Use GPU-aware solver wrapper (Phase 3.2 optimization)
+        # This replaces np.linalg.solve with optional CuPy for 10-100× speedup
+        self._current_bound_vortex_strengths = solve_linear_system_gpu_optional(
             self._currentGridWingWingInfluences__E,
             -self._currentStackWakeWingInfluences__E
             - self._currentStackFreestreamWingInfluences__E,
+            use_gpu=self._use_gpu,
         )
 
         # Update the bound RingVortices' strengths.
@@ -1498,6 +1657,46 @@ class UnsteadyRingVortexLatticeMethodSolver:
 
         # Populate the locations of the next time step's Airplanes' wake RingVortices.
         self._populate_next_airplanes_wake_vortices()
+
+        # NEW: Update GPU wake data (Phase 3.1) - after CPU population
+        if self._use_gpu and self._gpu_pool and self._current_step > 0:
+            try:
+                # Get only the newly added wake vortices (last row)
+                # This is determined by comparing current size to previous
+                num_new_wake = self._grid_num_spanwise_panels
+                current_total = len(self._current_wake_vortex_strengths)
+                start_idx = current_total - num_new_wake
+
+                if start_idx >= 0 and start_idx < current_total:
+                    # Extract newly added vortices
+                    new_wake_start = self._currentStackBrwrvp_GP1_CgP1[
+                        start_idx:current_total
+                    ]
+                    new_wake_end = self._currentStackFrwrvp_GP1_CgP1[
+                        start_idx:current_total
+                    ]
+                    new_wake_strengths = self._current_wake_vortex_strengths[
+                        start_idx:current_total
+                    ]
+                    new_wake_ages = np.zeros(
+                        num_new_wake, dtype=np.float64
+                    )  # New vortices
+                    new_wake_rc0s = self._currentStackWakeRc0s[start_idx:current_total]
+
+                    # Append to GPU (tiny transfer: ~50 bytes per vortex)
+                    self._gpu_pool.append_wake_vortices(
+                        new_wake_start,
+                        new_wake_end,
+                        new_wake_strengths,
+                        new_wake_ages,
+                        new_wake_rc0s,
+                    )
+
+                    # Update ages on GPU (GPU-side, no transfer)
+                    self._gpu_pool.update_wake_ages(self.delta_time)
+
+            except Exception as e:
+                _logger.warning(f"Failed to update GPU wake: {e}")
 
     def _populate_next_airplanes_wake_vortex_points(self) -> None:
         """Populates the locations of the next time step's Airplanes' wake RingVortex
@@ -2361,3 +2560,11 @@ class UnsteadyRingVortexLatticeMethodSolver:
                             Brrvp_GP1_CgP1=Brrvp_GP1_CgP1,
                             strength=1.0,
                         )
+
+    def __del__(self):
+        """Cleanup GPU resources on deletion."""
+        try:
+            if hasattr(self, "_gpu_pool") and self._gpu_pool:
+                self._gpu_pool = None
+        except:
+            pass

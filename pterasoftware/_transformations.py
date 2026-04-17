@@ -24,16 +24,14 @@ def _generate_homogs(vectors_A: np.ndarray, has_point: bool) -> np.ndarray:
     :return: A (...,4) ndarray of floats (with same leading dimensions as the input)
         representing the vector(s) in homogeneous coordinates.
     """
-    # Create a homogeneous ndarray with one extra dimension.
-    vectorsHomog_A = np.zeros(vectors_A.shape[:-1] + (4,), dtype=float)
-
-    # Copy the vectors' three components to the homogeneous ndarray.
-    vectorsHomog_A[..., :3] = vectors_A
-
-    # Set the homogeneous coordinate.
-    if has_point:
-        vectorsHomog_A[..., -1] = 1.0
-
+    # Create homogeneous coordinates more efficiently using concatenate
+    # This avoids intermediate allocations compared to zeros() + assignment
+    fourth_coord = (
+        np.ones(vectors_A.shape[:-1] + (1,), dtype=float)
+        if has_point
+        else np.zeros(vectors_A.shape[:-1] + (1,), dtype=float)
+    )
+    vectorsHomog_A = np.concatenate([vectors_A, fourth_coord], axis=-1)
     return vectorsHomog_A
 
 
@@ -525,6 +523,4 @@ def apply_T_to_vectors(
         transformed vector(s).
     """
     vectorsHomog_A = _generate_homogs(vectors_A, has_point)
-    return np.asarray(
-        np.einsum("ij,...j->...i", T, vectorsHomog_A)[..., :3], dtype=float
-    )
+    return np.einsum("ij,...j->...i", T, vectorsHomog_A)[..., :3]

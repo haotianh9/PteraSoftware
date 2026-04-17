@@ -1,27 +1,27 @@
 """Comprehensive test: Parallel Biot-Savart kernel correctness and performance."""
 
-import sys
-import numpy as np
+import os
 import time
 
-sys.path.insert(0, '/home/haotian/PteraSoftware')
+import numpy as np
 
+
+# Mock external dependencies before importing pterasoftware
 class Mock:
     def __getattr__(self, name):
         return Mock()
+
     def __call__(self, *args, **kwargs):
         return Mock()
 
-sys.modules['pyvista'] = Mock()
-sys.modules['pyside6'] = Mock()
 
-import importlib.util
-spec = importlib.util.spec_from_file_location(
-    "aero",
-    "/home/haotian/PteraSoftware/pterasoftware/_aerodynamics_functions.py"
-)
-aero = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(aero)
+import sys
+
+sys.modules["pyvista"] = Mock()
+sys.modules["pyside6"] = Mock()
+
+# noinspection PyProtectedMember
+from pterasoftware import _aerodynamics_functions as aero
 
 serial = aero._collapsed_velocities_from_line_vortices
 parallel = aero._collapsed_velocities_from_line_vortices_parallel
@@ -62,7 +62,9 @@ def test_correctness():
         counts_match = np.array_equal(counts_s, counts_p)
 
         status = "✓ PASS" if (results_match and counts_match) else "✗ FAIL"
-        print(f"  {name:<10} Error: {max_error:.2e}  Results: {results_match}  Counts: {counts_match}  {status}")
+        print(
+            f"  {name:<10} Error: {max_error:.2e}  Results: {results_match}  Counts: {counts_match}  {status}"
+        )
 
         if not (results_match and counts_match):
             all_pass = False
@@ -85,7 +87,9 @@ def test_performance():
         ("Huge", 2000, 1000),
     ]
 
-    print(f"{'Size':<12} {'Points':<10} {'Vortices':<10} {'Serial (ms)':<14} {'Parallel (ms)':<14} {'Speedup':<10}")
+    print(
+        f"{'Size':<12} {'Points':<10} {'Vortices':<10} {'Serial (ms)':<14} {'Parallel (ms)':<14} {'Speedup':<10}"
+    )
     print("-" * 90)
 
     speedups = []
@@ -118,7 +122,9 @@ def test_performance():
         speedups.append(speedup)
         status = f"{speedup:.2f}x" + (" ✓ SPEEDUP" if speedup > 1.1 else "")
 
-        print(f"{name:<12} {num_points:<10} {num_vortices:<10} {time_s*1000:>13.2f} {time_p*1000:>13.2f} {status:<10}")
+        print(
+            f"{name:<12} {num_points:<10} {num_vortices:<10} {time_s*1000:>13.2f} {time_p*1000:>13.2f} {status:<10}"
+        )
 
     avg_speedup = np.mean(speedups)
     max_speedup = np.max(speedups)

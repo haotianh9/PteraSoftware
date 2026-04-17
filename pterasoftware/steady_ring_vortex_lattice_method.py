@@ -30,6 +30,8 @@ from . import (
     operating_point,
     problems,
 )
+from ._gpu_config import get_config
+from ._linear_solver_gpu import solve_linear_system_gpu_optional
 
 _logger = _logging.get_logger("steady_ring_vortex_lattice_method")
 
@@ -98,6 +100,7 @@ class SteadyRingVortexLatticeMethodSolver:
         "stackSeedPoints_GP1_CgP1",
         "gridStreamlinePoints_GP1_CgP1",
         "ran",
+        "_use_gpu",
     )
 
     def __init__(self, steady_problem: problems.SteadyProblem) -> None:
@@ -187,6 +190,14 @@ class SteadyRingVortexLatticeMethodSolver:
         self.gridStreamlinePoints_GP1_CgP1 = np.empty((0, 3), dtype=float)
 
         self.ran = False
+
+        # Initialize GPU support (Phase 3.2)
+        self._use_gpu = False
+        try:
+            config = get_config()
+            self._use_gpu = config.get_use_gpu()
+        except:
+            self._use_gpu = False
 
     def run(self) -> None:
         """Runs the solver on the SteadyProblem.
@@ -546,10 +557,16 @@ class SteadyRingVortexLatticeMethodSolver:
     def _calculate_vortex_strengths(self) -> None:
         """Solves for the strength of each Panel's RingVortex and HorseshoeVortex.
 
+        Uses GPU-accelerated solver when configured and available (Phase 3.2). Falls
+        back gracefully to CPU for maximum compatibility.
+
         :return: None
         """
-        self._vortex_strengths = np.linalg.solve(
-            self._gridWingWingInfluences__E, -self.stackFreestreamWingInfluences__E
+        # Use GPU-aware solver wrapper (Phase 3.2 optimization)
+        self._vortex_strengths = solve_linear_system_gpu_optional(
+            self._gridWingWingInfluences__E,
+            -self.stackFreestreamWingInfluences__E,
+            use_gpu=self._use_gpu,
         )
 
         # Update the RingVortices' and HorseshoeVortices' strengths.
