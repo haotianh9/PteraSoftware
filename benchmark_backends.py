@@ -28,10 +28,104 @@ import numpy as np
 # Set backend BEFORE importing pterasoftware
 backend = os.environ.get("PTERASOFTWARE_BACKEND", "serial_cpu")
 
-from pterasoftware._aerodynamics_functions import (
-    collapsed_velocities_from_ring_vortices,
-    get_backend_info,
-)
+from pterasoftware._aerodynamics_functions import get_backend_info
+
+# Import backend selection function
+from pterasoftware._gpu_config import get_config, select_biot_savart_function
+
+
+def collapsed_velocities_from_ring_vortices(
+    stackP_GP1_CgP1: np.ndarray,
+    stackBrrvp_GP1_CgP1: np.ndarray,
+    stackFrrvp_GP1_CgP1: np.ndarray,
+    stackFlrvp_GP1_CgP1: np.ndarray,
+    stackBlrvp_GP1_CgP1: np.ndarray,
+    strengths: np.ndarray,
+    r_c0s: np.ndarray,
+    singularity_counts: np.ndarray,
+    ages: np.ndarray | None = None,
+    nu: float = 0.0,
+) -> np.ndarray:
+    """Dispatch ring vortex velocity calculation to appropriate backend."""
+    config = get_config()
+
+    if config.get_use_gpu():
+        # For GPU: convert ring vortex to line vortex format and use GPU kernel
+        from pterasoftware._aerodynamics_functions_cuda import (
+            collapsed_velocities_from_line_vortices_cuda,
+        )
+
+        # Convert ring vortex (4 vertices) to line vortices (4 segments)
+        # Each ring is 4 line vortices: BR->FR, FR->FL, FL->BL, BL->BR
+        stackVInd = np.zeros((stackP_GP1_CgP1.shape[0], 3), dtype=np.float64)
+
+        # Segment 1: Back Right to Front Right
+        stackVInd += collapsed_velocities_from_line_vortices_cuda(
+            stackP_GP1_CgP1,
+            stackBrrvp_GP1_CgP1,
+            stackFrrvp_GP1_CgP1,
+            strengths,
+            r_c0s,
+            singularity_counts,
+            ages,
+            nu,
+        )
+
+        # Segment 2: Front Right to Front Left
+        stackVInd += collapsed_velocities_from_line_vortices_cuda(
+            stackP_GP1_CgP1,
+            stackFrrvp_GP1_CgP1,
+            stackFlrvp_GP1_CgP1,
+            strengths,
+            r_c0s,
+            singularity_counts,
+            ages,
+            nu,
+        )
+
+        # Segment 3: Front Left to Back Left
+        stackVInd += collapsed_velocities_from_line_vortices_cuda(
+            stackP_GP1_CgP1,
+            stackFlrvp_GP1_CgP1,
+            stackBlrvp_GP1_CgP1,
+            strengths,
+            r_c0s,
+            singularity_counts,
+            ages,
+            nu,
+        )
+
+        # Segment 4: Back Left to Back Right
+        stackVInd += collapsed_velocities_from_line_vortices_cuda(
+            stackP_GP1_CgP1,
+            stackBlrvp_GP1_CgP1,
+            stackBrrvp_GP1_CgP1,
+            strengths,
+            r_c0s,
+            singularity_counts,
+            ages,
+            nu,
+        )
+
+        return stackVInd
+    else:
+        # For CPU: use CPU ring vortex function
+        from pterasoftware._aerodynamics_functions import (
+            collapsed_velocities_from_ring_vortices as cpu_ring_vortex,
+        )
+
+        return cpu_ring_vortex(
+            stackP_GP1_CgP1,
+            stackBrrvp_GP1_CgP1,
+            stackFrrvp_GP1_CgP1,
+            stackFlrvp_GP1_CgP1,
+            stackBlrvp_GP1_CgP1,
+            strengths,
+            r_c0s,
+            singularity_counts,
+            ages,
+            nu,
+        )
 
 
 def create_problem(num_points: int, num_vortices: int, seed: int = 42) -> dict:

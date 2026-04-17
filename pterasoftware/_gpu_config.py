@@ -33,8 +33,6 @@ import os
 import warnings
 from enum import Enum
 
-from numba import cuda
-
 
 class Backend(Enum):
     """Computation backend selector."""
@@ -42,6 +40,26 @@ class Backend(Enum):
     SERIAL_CPU = "serial_cpu"
     PARALLEL_CPU = "parallel_cpu"
     GPU_CUDA = "gpu_cuda"
+
+
+def _check_numba_cuda_available() -> bool:
+    """Check if Numba CUDA can run (hardware or simulator mode).
+
+    Returns True if either: - Real CUDA GPU available via Numba - Simulator mode enabled
+    (NUMBA_ENABLE_CUDASIM)
+    """
+    try:
+        from numba import cuda
+
+        # Check if real CUDA is available
+        if cuda.is_available():
+            return True
+
+        # Check if simulator mode would work (always available)
+        # Simulator mode allows CUDA kernels to run on CPU
+        return os.environ.get("NUMBA_ENABLE_CUDASIM", "").lower() in ("1", "true")
+    except Exception:
+        return False
 
 
 class AerodynamicsConfig:
@@ -70,7 +88,7 @@ class AerodynamicsConfig:
     PTERASOFTWARE_BACKEND=serial_cpu
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize configuration from environment variables."""
         # Read backend from environment
         backend_str = os.environ.get("PTERASOFTWARE_BACKEND", "serial_cpu").lower()
@@ -85,10 +103,10 @@ class AerodynamicsConfig:
             )
             backend_str = "serial_cpu"
 
-        self._backend_choice = Backend(backend_str)
+        self._backend_choice: Backend = Backend(backend_str)
 
-        # Check GPU availability
-        self._gpu_available = cuda.is_available()
+        # Check GPU availability via Numba CUDA
+        self._gpu_available: bool = _check_numba_cuda_available()
 
         # Handle GPU selection
         if self._backend_choice == Backend.GPU_CUDA:
@@ -216,8 +234,8 @@ def select_biot_savart_function():
     """Select appropriate Biot-Savart function based on configuration.
 
     This function is called at runtime to choose between: 1. Serial CPU (fastest
-    baseline) 2. Parallel CPU (Numba prange - usually slower) 3. GPU CUDA (50-150×
-    speedup if available)
+    baseline) 2. Parallel CPU (Numba prange - usually slower) 3. GPU CUDA (Numba CUDA
+    kernels - requires NVIDIA GPU or simulator)
 
     Returns: -------- callable     Selected function for computing Biot-Savart
     velocities
@@ -228,7 +246,7 @@ def select_biot_savart_function():
     backend = config.get_backend()
 
     if backend == Backend.GPU_CUDA:
-        # Import GPU version (lazy import to avoid GPU overhead if not used)
+        # Import existing CUDA implementation (will use simulator if real GPU unavailable)
         try:
             from pterasoftware._aerodynamics_functions_cuda import (
                 collapsed_velocities_from_line_vortices_cuda,
@@ -243,18 +261,18 @@ def select_biot_savart_function():
     elif backend == Backend.PARALLEL_CPU:
         # Import parallel CPU version
         from pterasoftware._aerodynamics_functions import (
-            _collapsed_velocities_from_line_vortices_parallel,
+            collapsed_velocities_from_ring_vortices_parallel,
         )
 
-        return _collapsed_velocities_from_line_vortices_parallel
+        return collapsed_velocities_from_ring_vortices_parallel
 
     else:  # Backend.SERIAL_CPU (default)
         # Import serial CPU version (baseline)
         from pterasoftware._aerodynamics_functions import (
-            _collapsed_velocities_from_line_vortices,
+            collapsed_velocities_from_ring_vortices,
         )
 
-        return _collapsed_velocities_from_line_vortices
+        return collapsed_velocities_from_ring_vortices
 
 
 def get_gpu_memory_pool_if_available():

@@ -9,6 +9,7 @@ strengths + new wake vortices) - Compared to naive approach: 43 KB → 1.7 KB pe
 """
 
 import math
+from typing import cast
 
 import numpy as np
 from numba import cuda, float64, int64
@@ -198,25 +199,25 @@ class GPUMemoryPool:
 
     def get_velocities_gpu(self) -> np.ndarray:
         """Get GPU array pointer to velocities (for kernel output)."""
-        return self.velocities_gpu
+        return cast(np.ndarray, self.velocities_gpu)
 
     def get_singularity_counts_gpu(self) -> np.ndarray:
         """Get GPU array pointer to singularity counts (for kernel output)."""
-        return self.singularity_counts_gpu
+        return cast(np.ndarray, self.singularity_counts_gpu)
 
     def fetch_velocities_to_cpu(self) -> np.ndarray:
         """Transfer velocity results from GPU to CPU.
 
         Returns: -------- np.ndarray     Velocities on CPU (num_panels, 3)
         """
-        return self.velocities_gpu.copy_to_host()
+        return cast(np.ndarray, self.velocities_gpu.copy_to_host())
 
     def fetch_singularity_counts_to_cpu(self) -> np.ndarray:
         """Transfer singularity counts from GPU to CPU.
 
         Returns: -------- np.ndarray     Singularity counts on CPU (4,)
         """
-        return self.singularity_counts_gpu.copy_to_host()
+        return cast(np.ndarray, self.singularity_counts_gpu.copy_to_host())
 
     def reset_velocities(self) -> None:
         """Reset velocity buffer for next computation."""

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 
 
@@ -523,4 +525,4 @@ def apply_T_to_vectors(
         transformed vector(s).
     """
     vectorsHomog_A = _generate_homogs(vectors_A, has_point)
-    return np.einsum("ij,...j->...i", T, vectorsHomog_A)[..., :3]
+    return cast(np.ndarray, np.einsum("ij,...j->...i", T, vectorsHomog_A)[..., :3])
