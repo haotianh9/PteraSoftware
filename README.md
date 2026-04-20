@@ -244,13 +244,14 @@ Before contributing, make sure to read through the [Contributing Guidelines](CON
 
 ## Contributors
 
-Thank you so much to all the people that have contributed to Ptera Software! Here is a list of all the people that have contributed code:
-
-* Cameron Urban (@camUrban)
-* Peter Sharpe (@peterdsharpe)
-* Zach Tait (@Zach10a)
-* Jonah Jaffe (@JonahJ27)
-* Akhil Mettu (@AKHIL-149)
+* Cameron Urban ([camUrban](https://github.com/camUrban))
+* Zach Tait ([Zach10a](https://github.com/Zach10a))
+* Jonah Jaffe ([JonahJ27](https://github.com/JonahJ27))
+* Venkata Akhil Mettu ([AKHIL-149](https://github.com/AKHIL-149))
+* Savitha N ([Savitha-Akhilu](https://github.com/Savitha-Akhilu))
+* Pedro Bornia ([BorniaPedro](https://github.com/BorniaPedro))
+* Mohamed Abdulghany ([MohamedMG7](https://github.com/MohamedMG7))
+* Hang Haotian ([haotianh9](https://github.com/haotianh9))
 
 ### Supporters
 
