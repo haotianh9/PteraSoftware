@@ -1,0 +1,104 @@
+{
+  "case": "phase0_multibody_validation_two_gliding_wings_far_apart",
+  "description": "Two identical gliding wings are solved together at large lateral separation and compared against the single-glider baseline.",
+  "separation_direction_gp1": [
+    0.0,
+    1.0,
+    0.0
+  ],
+  "separation_m": 5.0,
+  "speed_mps": 3.5,
+  "alpha_deg": 5.0,
+  "beta_deg": 0.0,
+  "single_glider": {
+    "forces_w_n": [
+      -0.0004267950974902253,
+      2.0328790734103208e-19,
+      -0.02330874405531147
+    ],
+    "moments_w_about_own_cg_nm": [
+      4.351348146245964e-19,
+      -0.00020036041156306028,
+      1.4346295613556834e-19
+    ],
+    "force_coefficients_w": [
+      -0.007387313251343978,
+      3.518670810816394e-18,
+      -0.40344651296265455
+    ],
+    "moment_coefficients_w_about_own_cg": [
+      3.4234835416340894e-17,
+      -0.09841619795014661,
+      1.1287147170423837e-17
+    ]
+  },
+  "pair_gliders": [
+    {
+      "airplane_id": 0,
+      "cg_gp1_cgp1_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "forces_w_n": [
+        -0.0004267257868868185,
+        1.1518215288616653e-09,
+        -0.02331011140725305
+      ],
+      "moments_w_about_own_cg_nm": [
+        -1.6785849276652336e-09,
+        -0.00020037212434690342,
+        -1.0723568576051292e-10
+      ],
+      "force_coefficients_w": [
+        -0.0073861135676034275,
+        1.993665459931375e-08,
+        -0.4034701801912068
+      ],
+      "moment_coefficients_w_about_own_cg": [
+        -1.3206499870746363e-07,
+        -0.09842195122068674,
+        -8.436916397822268e-09
+      ],
+      "force_coefficients_relative_error_norm_vs_single": 5.8728111012502404e-05,
+      "moment_coefficients_relative_error_norm_vs_single": 5.847403583679418e-05,
+      "forces_relative_error_norm_vs_single": 5.8728111012499334e-05,
+      "moments_relative_error_norm_vs_single": 5.905827002625761e-05
+    },
+    {
+      "airplane_id": 1,
+      "cg_gp1_cgp1_m": [
+        0.0,
+        5.0,
+        0.0
+      ],
+      "forces_w_n": [
+        -0.0004267257868868224,
+        -1.1518215290107431e-09,
+        -0.023310111407253583
+      ],
+      "moments_w_about_own_cg_nm": [
+        1.6785849600840998e-09,
+        -0.0002003721243469109,
+        1.0723568554475705e-10
+      ],
+      "force_coefficients_w": [
+        -0.007386113567603495,
+        -1.993665460189411e-08,
+        -0.40347018019121605
+      ],
+      "moment_coefficients_w_about_own_cg": [
+        1.3206500125806292e-07,
+        -0.09842195122069042,
+        8.436916380847375e-09
+      ],
+      "force_coefficients_relative_error_norm_vs_single": 5.872811103543853e-05,
+      "moment_coefficients_relative_error_norm_vs_single": 5.847403587473047e-05,
+      "forces_relative_error_norm_vs_single": 5.872811103538015e-05,
+      "moments_relative_error_norm_vs_single": 5.9058270085530115e-05
+    }
+  ],
+  "max_force_coefficients_relative_error_norm_vs_single": 5.872811103543853e-05,
+  "max_moment_coefficients_relative_error_norm_vs_single": 5.847403587473047e-05,
+  "passes_far_field_equivalence_check": true
+}

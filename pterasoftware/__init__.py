@@ -18,6 +18,9 @@ UnsteadyProblems.
 coupled_unsteady_ring_vortex_lattice_method.py Contains the
 CoupledUnsteadyRingVortexLatticeMethodSolver class.
 
+multibody_coupled_unsteady_ring_vortex_lattice_method.py Contains the
+MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver class.
+
 operating_point.py: Contains classes for the operating conditions of aerodynamic
 problems.
 
@@ -53,6 +56,7 @@ import pterasoftware.problems
 _LAZY_MODULES = {
     "convergence": "pterasoftware.convergence",
     "coupled_unsteady_ring_vortex_lattice_method": "pterasoftware.coupled_unsteady_ring_vortex_lattice_method",
+    "multibody_coupled_unsteady_ring_vortex_lattice_method": "pterasoftware.multibody_coupled_unsteady_ring_vortex_lattice_method",
     "output": "pterasoftware.output",
     "steady_horseshoe_vortex_lattice_method": "pterasoftware.steady_horseshoe_vortex_lattice_method",
     "steady_ring_vortex_lattice_method": "pterasoftware.steady_ring_vortex_lattice_method",

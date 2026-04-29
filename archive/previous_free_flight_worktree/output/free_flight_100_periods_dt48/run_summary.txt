@@ -1,0 +1,10 @@
+status=failed
+error=ValueError('vCg__E must be greater than 0.0.')
+steps_per_flap=48
+prescribed_steps=192
+free_steps=4608
+num_states=1426
+last_time_s=3.7109375
+last_period=29.6875
+final_speed_mps=37.17657345199379
+plot_path=/home/hht/PteraSoftware_free_flight/output/free_flight_100_periods_dt48/velocity_history_vs_period.png

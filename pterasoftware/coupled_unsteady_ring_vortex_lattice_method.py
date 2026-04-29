@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -80,6 +81,11 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         self.delta_time = self.coupled_unsteady_problem.delta_time
         self._current_step: int = 0
         self._prescribed_wake: bool = True
+        self._history_stride: int = 1
+        self._save_every_n_steps: int | None = None
+        self._history_save_dir: Path | None = None
+        self._store_full_history: bool = True
+        self.full_history_available: bool = True
 
         self.coupled_steady_problems = (
             self.coupled_unsteady_problem.coupled_steady_problems
@@ -176,13 +182,13 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         self.list_num_wake_vortices: list[int] = []
         # TODO: Determine if these private attributes are needed and if not
         #  delete them.
-        self._list_wake_vortex_strengths: list[np.ndarray] = []
-        self._list_wake_vortex_ages: list[np.ndarray] = []
-        self._list_wake_rc0s: list[np.ndarray] = []
-        self.listStackBrwrvp_GP1_CgP1: list[np.ndarray] = []
-        self.listStackFrwrvp_GP1_CgP1: list[np.ndarray] = []
-        self.listStackFlwrvp_GP1_CgP1: list[np.ndarray] = []
-        self.listStackBlwrvp_GP1_CgP1: list[np.ndarray] = []
+        self._list_wake_vortex_strengths: list[np.ndarray | None] = []
+        self._list_wake_vortex_ages: list[np.ndarray | None] = []
+        self._list_wake_rc0s: list[np.ndarray | None] = []
+        self.listStackBrwrvp_GP1_CgP1: list[np.ndarray | None] = []
+        self.listStackFrwrvp_GP1_CgP1: list[np.ndarray | None] = []
+        self.listStackFlwrvp_GP1_CgP1: list[np.ndarray | None] = []
+        self.listStackBlwrvp_GP1_CgP1: list[np.ndarray | None] = []
 
         self._currentStackBoundRc0s: np.ndarray = np.empty(0, dtype=float)
         self._currentStackWakeRc0s: np.ndarray = np.empty(0, dtype=float)
@@ -204,6 +210,9 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         self,
         prescribed_wake: bool | np.bool_ = True,
         show_progress: bool | np.bool_ = True,
+        history_stride: int | np.integer = 1,
+        save_every_n_steps: int | np.integer | None = None,
+        history_save_dir: str | Path | None = None,
     ) -> None:
         """Runs the solver on the CoupledUnsteadyProblem.
 
@@ -223,6 +232,30 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         show_progress = _parameter_validation.boolLike_return_bool(
             show_progress, "show_progress"
         )
+        self._history_stride = _parameter_validation.int_in_range_return_int(
+            history_stride,
+            "history_stride",
+            min_val=1,
+            min_inclusive=True,
+        )
+        if save_every_n_steps is None:
+            self._save_every_n_steps = None
+        else:
+            self._save_every_n_steps = _parameter_validation.int_in_range_return_int(
+                save_every_n_steps,
+                "save_every_n_steps",
+                min_val=1,
+                min_inclusive=True,
+            )
+        if history_save_dir is None:
+            self._history_save_dir = None
+        else:
+            if not isinstance(history_save_dir, (str, Path)):
+                raise TypeError("history_save_dir must be a str, Path, or None.")
+            self._history_save_dir = Path(history_save_dir)
+            self._history_save_dir.mkdir(parents=True, exist_ok=True)
+        self._store_full_history = self._history_stride == 1
+        self.full_history_available = self._store_full_history
 
         # REFACTOR: Before starting the loop, we should reset mujoco_model to the
         #  initial state, as defined by the CoupledOperatingPoint.
@@ -257,37 +290,40 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
             # number is 0.
             this_num_wake_ring_vortices = step * _num_spanwise_panels
 
-            # Allocate the ndarrays for this time step.
-            this_wake_ring_vortex_strengths = np.zeros(
-                this_num_wake_ring_vortices, dtype=float
+            keep_step_history = self._store_full_history or self._should_retain_step(
+                step
             )
-            this_wake_ring_vortex_ages = np.zeros(
-                this_num_wake_ring_vortices, dtype=float
-            )
-            thisStackBrwrvp_GP1_CgP1 = np.zeros(
-                (this_num_wake_ring_vortices, 3), dtype=float
-            )
-            thisStackFrwrvp_GP1_CgP1 = np.zeros(
-                (this_num_wake_ring_vortices, 3), dtype=float
-            )
-            thisStackFlwrvp_GP1_CgP1 = np.zeros(
-                (this_num_wake_ring_vortices, 3), dtype=float
-            )
-            thisStackBlwrvp_GP1_CgP1 = np.zeros(
-                (this_num_wake_ring_vortices, 3), dtype=float
-            )
-
-            this_wake_rc0s = np.zeros(this_num_wake_ring_vortices, dtype=float)
-
-            # Append this time step's ndarrays to the lists of ndarrays.
             self.list_num_wake_vortices.append(this_num_wake_ring_vortices)
-            self._list_wake_vortex_strengths.append(this_wake_ring_vortex_strengths)
-            self._list_wake_vortex_ages.append(this_wake_ring_vortex_ages)
-            self._list_wake_rc0s.append(this_wake_rc0s)
-            self.listStackBrwrvp_GP1_CgP1.append(thisStackBrwrvp_GP1_CgP1)
-            self.listStackFrwrvp_GP1_CgP1.append(thisStackFrwrvp_GP1_CgP1)
-            self.listStackFlwrvp_GP1_CgP1.append(thisStackFlwrvp_GP1_CgP1)
-            self.listStackBlwrvp_GP1_CgP1.append(thisStackBlwrvp_GP1_CgP1)
+            if keep_step_history:
+                self._list_wake_vortex_strengths.append(
+                    np.zeros(this_num_wake_ring_vortices, dtype=float)
+                )
+                self._list_wake_vortex_ages.append(
+                    np.zeros(this_num_wake_ring_vortices, dtype=float)
+                )
+                self._list_wake_rc0s.append(
+                    np.zeros(this_num_wake_ring_vortices, dtype=float)
+                )
+                self.listStackBrwrvp_GP1_CgP1.append(
+                    np.zeros((this_num_wake_ring_vortices, 3), dtype=float)
+                )
+                self.listStackFrwrvp_GP1_CgP1.append(
+                    np.zeros((this_num_wake_ring_vortices, 3), dtype=float)
+                )
+                self.listStackFlwrvp_GP1_CgP1.append(
+                    np.zeros((this_num_wake_ring_vortices, 3), dtype=float)
+                )
+                self.listStackBlwrvp_GP1_CgP1.append(
+                    np.zeros((this_num_wake_ring_vortices, 3), dtype=float)
+                )
+            else:
+                self._list_wake_vortex_strengths.append(None)
+                self._list_wake_vortex_ages.append(None)
+                self._list_wake_rc0s.append(None)
+                self.listStackBrwrvp_GP1_CgP1.append(None)
+                self.listStackFrwrvp_GP1_CgP1.append(None)
+                self.listStackFlwrvp_GP1_CgP1.append(None)
+                self.listStackBlwrvp_GP1_CgP1.append(None)
 
         # The following loop attempts to predict how much time each time step will
         # take, relative to the other time steps. This data will be used to generate
@@ -454,17 +490,16 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
 
                 # Get the pre-allocated (but still all zero) arrays of wake
                 # information that are associated with this time step.
-                self._current_wake_vortex_strengths = self._list_wake_vortex_strengths[
-                    step
-                ]
-                self._current_wake_vortex_ages = self._list_wake_vortex_ages[step]
-                self._currentStackBrwrvp_GP1_CgP1 = self.listStackBrwrvp_GP1_CgP1[step]
-                self._currentStackFrwrvp_GP1_CgP1 = self.listStackFrwrvp_GP1_CgP1[step]
-                self._currentStackFlwrvp_GP1_CgP1 = self.listStackFlwrvp_GP1_CgP1[step]
-                self._currentStackBlwrvp_GP1_CgP1 = self.listStackBlwrvp_GP1_CgP1[step]
+                self._prepare_step_wake_storage(step=step)
 
                 self._currentStackBoundRc0s = np.zeros(self.num_panels, dtype=float)
-                self._currentStackWakeRc0s = self._list_wake_rc0s[step]
+                current_stack_wake_rc0s = self._list_wake_rc0s[step]
+                if current_stack_wake_rc0s is None:
+                    self._currentStackWakeRc0s = np.zeros(
+                        self.list_num_wake_vortices[step], dtype=float
+                    )
+                else:
+                    self._currentStackWakeRc0s = current_stack_wake_rc0s
 
                 # Initialize this time step's bound RingVortices.
                 # Only do this at the beginning for the first time step. For subsequent
@@ -537,11 +572,113 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
                 )
                 self._populate_next_airplanes_wake()
 
+                if self._save_every_n_steps is not None:
+                    if (
+                        step % self._save_every_n_steps == 0
+                        or step == self.num_steps - 1
+                    ):
+                        self._save_history_snapshot(step=step)
+
+                if not self._store_full_history and step > 1:
+                    self._prune_old_step_history(step=step)
+
                 # Update the progress bar based on this time step's predicted
                 # approximate, relative computing time.
                 bar.update(n=float(approx_times[step]))
 
         self.ran = True
+
+    def _should_retain_step(self, step: int) -> bool:
+        """Return whether this time step should be retained in memory."""
+        return (
+            step == 0 or step == self.num_steps - 1 or step % self._history_stride == 0
+        )
+
+    def _prepare_step_wake_storage(self, step: int) -> None:
+        """Assign wake arrays for the current step, allocating temporary arrays if
+        needed."""
+        num_wake_ring_vortices = self.list_num_wake_vortices[step]
+
+        current_strengths = self._list_wake_vortex_strengths[step]
+        self._current_wake_vortex_strengths = (
+            np.zeros(num_wake_ring_vortices, dtype=float)
+            if current_strengths is None
+            else current_strengths
+        )
+
+        current_ages = self._list_wake_vortex_ages[step]
+        self._current_wake_vortex_ages = (
+            np.zeros(num_wake_ring_vortices, dtype=float)
+            if current_ages is None
+            else current_ages
+        )
+
+        current_br = self.listStackBrwrvp_GP1_CgP1[step]
+        self._currentStackBrwrvp_GP1_CgP1 = (
+            np.zeros((num_wake_ring_vortices, 3), dtype=float)
+            if current_br is None
+            else current_br
+        )
+
+        current_fr = self.listStackFrwrvp_GP1_CgP1[step]
+        self._currentStackFrwrvp_GP1_CgP1 = (
+            np.zeros((num_wake_ring_vortices, 3), dtype=float)
+            if current_fr is None
+            else current_fr
+        )
+
+        current_fl = self.listStackFlwrvp_GP1_CgP1[step]
+        self._currentStackFlwrvp_GP1_CgP1 = (
+            np.zeros((num_wake_ring_vortices, 3), dtype=float)
+            if current_fl is None
+            else current_fl
+        )
+
+        current_bl = self.listStackBlwrvp_GP1_CgP1[step]
+        self._currentStackBlwrvp_GP1_CgP1 = (
+            np.zeros((num_wake_ring_vortices, 3), dtype=float)
+            if current_bl is None
+            else current_bl
+        )
+
+    def _save_history_snapshot(self, step: int) -> None:
+        """Persist one solver snapshot to disk to reduce reliance on RAM history."""
+        if self._history_save_dir is None:
+            return
+
+        snapshot_path = self._history_save_dir / f"step_{step:06d}.npz"
+        np.savez_compressed(
+            snapshot_path,
+            step=np.array([step], dtype=int),
+            position_E_E=self._nextPosition_E_E.copy(),
+            R_pas_E_to_BP1=self._nextR_pas_E_to_BP1.copy(),
+            velocity_E__E=self._nextVelocity_E__E.copy(),
+            omegas_BP1__E=self._nextOmegas_BP1__E.copy(),
+            wake_strengths=self._current_wake_vortex_strengths.copy(),
+            wake_ages=self._current_wake_vortex_ages.copy(),
+            wake_rc0s=self._currentStackWakeRc0s.copy(),
+            wake_br=self._currentStackBrwrvp_GP1_CgP1.copy(),
+            wake_fr=self._currentStackFrwrvp_GP1_CgP1.copy(),
+            wake_fl=self._currentStackFlwrvp_GP1_CgP1.copy(),
+            wake_bl=self._currentStackBlwrvp_GP1_CgP1.copy(),
+        )
+
+    def _prune_old_step_history(self, step: int) -> None:
+        """Drop heavy history objects that are no longer needed for the solve."""
+        prune_step = step - 1
+        if prune_step <= 0 or self._should_retain_step(prune_step):
+            return
+
+        self._list_wake_vortex_strengths[prune_step] = None
+        self._list_wake_vortex_ages[prune_step] = None
+        self._list_wake_rc0s[prune_step] = None
+        self.listStackBrwrvp_GP1_CgP1[prune_step] = None
+        self.listStackFrwrvp_GP1_CgP1[prune_step] = None
+        self.listStackFlwrvp_GP1_CgP1[prune_step] = None
+        self.listStackBlwrvp_GP1_CgP1[prune_step] = None
+
+        if prune_step < len(self.coupled_steady_problems):
+            self.coupled_steady_problems[prune_step] = None  # type: ignore[assignment]
 
     def _initialize_panel_vortices(self, step: int) -> None:
         """Calculates the locations of the bound RingVortex vertices for a particular
@@ -1581,6 +1718,14 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         #
         # Gimbal lock occurs when angleY = +/- 90 degrees (cos(angleY) = 0).
         R = self._nextR_pas_E_to_BP1
+
+        def _wrap_angle_deg(angle_deg: float) -> float:
+            """Wrap an angle into the validator's accepted interval (-180, 180]."""
+            wrapped_angle_deg = ((angle_deg + 180.0) % 360.0) - 180.0
+            if wrapped_angle_deg <= -180.0:
+                wrapped_angle_deg += 360.0
+            return float(wrapped_angle_deg)
+
         # Extract pitch (angleY) with clamping to avoid numerical issues with asin.
         sin_angleY = -R[0, 2]
         sin_angleY = np.clip(sin_angleY, -1.0, 1.0)
@@ -1595,6 +1740,9 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
             # Normal case: extract roll and yaw.
             angleX = np.rad2deg(np.arctan2(R[1, 2], R[2, 2]))
             angleZ = np.rad2deg(np.arctan2(R[0, 1], R[0, 0]))
+        angleX = _wrap_angle_deg(angleX)
+        angleY = _wrap_angle_deg(angleY)
+        angleZ = _wrap_angle_deg(angleZ)
         # Assemble the angles into the angles_E_to_BP1_izyx vector.
         angles_E_to_BP1_izyx = np.array([angleX, angleY, angleZ], dtype=float)
 

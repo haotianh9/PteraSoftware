@@ -1102,6 +1102,7 @@ def animate_free_flight(
     show_wake_vortices: bool = False,
     save: bool = False,
     testing: bool = False,
+    camera_mode: str = "trajectory",
     body_mesh_path: str | None = None,
     body_mesh_scale: float | int = 1.0,
     ground_plane_z_E: float | int | None = None,
@@ -1122,6 +1123,9 @@ def animate_free_flight(
     :param testing: Set this to True to start the animation after one second, which is
         useful for running test suites. It can be a bool or a numpy bool and will be
         converted internally to a bool. The default is False.
+    :param camera_mode: Either ``"trajectory"`` to frame the full path, or
+        ``"follow_body"`` to keep the camera centered on the moving aircraft. The
+        default is ``"trajectory"``.
     :param body_mesh_path: The path to an STL file containing the body mesh to display.
         The mesh is assumed to be in the first Airplane's body axes, relative to the
         first Airplane's CG. Setting this to None disables body mesh rendering. The
@@ -1140,6 +1144,11 @@ def animate_free_flight(
         raise TypeError(
             "coupled_solver must be a CoupledUnsteadyRingVortexLatticeMethodSolver."
         )
+    if not coupled_solver.full_history_available:
+        raise RuntimeError(
+            "Full time history is not available in memory. "
+            "Re-run the solver with history_stride=1 to animate."
+        )
 
     if scalar_type is not None:
         scalar_type = _parameter_validation.str_return_str(scalar_type, "scalar_type")
@@ -1153,6 +1162,9 @@ def animate_free_flight(
     )
     save = _parameter_validation.boolLike_return_bool(save, "save")
     testing = _parameter_validation.boolLike_return_bool(testing, "testing")
+    camera_mode = _parameter_validation.str_return_str(camera_mode, "camera_mode")
+    if camera_mode not in ("trajectory", "follow_body"):
+        raise ValueError('camera_mode must be either "trajectory" or "follow_body".')
 
     if body_mesh_path is not None:
         body_mesh_path = _parameter_validation.str_return_str(
@@ -1246,17 +1258,11 @@ def animate_free_flight(
         min_scalar = round(min(all_scalars), 2)
         max_scalar = round(max(all_scalars), 2)
 
-    # Compute a camera position that can see the entire trajectory. Find the midpoint
-    # and extent of the trajectory, then position the camera far enough back to see it
-    # all.
+    # Compute scale references for the camera.
     initialPosition_E_E = coupled_solver.stackPosition_E_E[0]
     finalPosition_E_E = coupled_solver.stackPosition_E_E[-1]
     trajectoryMidpoint_E_E = (initialPosition_E_E + finalPosition_E_E) / 2.0
     trajectory_extent = float(np.linalg.norm(finalPosition_E_E - initialPosition_E_E))
-
-    # Compute the airplane's bounding diagonal at the first time step to use as a
-    # scale reference for the camera. This ensures the padding adapts to the size of
-    # the aircraft rather than using a hardcoded minimum.
     first_panel_surfaces_for_scale = _get_panel_surfaces_free_flight(
         airplanes[0],
         coupled_solver.stackPosition_E_E[0],
@@ -1266,6 +1272,19 @@ def animate_free_flight(
     airplane_diagonal = float(
         np.linalg.norm(airplane_bounds[1::2] - airplane_bounds[::2])
     )
+    follow_airplane_diagonal = airplane_diagonal
+    if camera_mode == "follow_body":
+        for step_id, airplane in enumerate(airplanes):
+            panel_surfaces_for_scale = _get_panel_surfaces_free_flight(
+                airplane,
+                coupled_solver.stackPosition_E_E[step_id],
+                coupled_solver.stackR_pas_E_to_BP1[step_id],
+            )
+            panel_bounds = np.array(panel_surfaces_for_scale.bounds)
+            follow_airplane_diagonal = max(
+                follow_airplane_diagonal,
+                float(np.linalg.norm(panel_bounds[1::2] - panel_bounds[::2])),
+            )
 
     # If a ground plane z coordinate was provided, compute the ground plane surface
     # once. It is static and will be re-added to the Plotter each frame.
@@ -1280,13 +1299,7 @@ def animate_free_flight(
         )
         ground_plane_texture = _get_ground_plane_texture()
 
-    # Add some padding to ensure we can see the whole airplane and wake at each end.
-    # Use the airplane's bounding diagonal as the minimum scale reference.
-    padding = float(max(airplane_diagonal * 2.0, trajectory_extent * 0.5))
-    camera_distance = trajectory_extent + padding
-
-    # Position the camera along the direction (-1, -1, 1) (in PyVista axes) from the
-    # trajectory midpoint.
+    # Position the camera along the direction (-1, -1, 1) (in PyVista axes).
     cameraDirection_V = np.array([-1.0, -1.0, 1.0])
     cameraDirection_V = cameraDirection_V / np.linalg.norm(cameraDirection_V)
 
@@ -1299,72 +1312,92 @@ def animate_free_flight(
         intrinsic=True,
         order="xyz",
     )
-    focalPoint_V_E = _transformations.apply_T_to_vectors(
-        T_pas_E_to_V,
-        trajectoryMidpoint_E_E,
-        has_point=True,
-    )
-
-    cameraPosition_V_E = focalPoint_V_E + camera_distance * cameraDirection_V
     viewUp_V = (0.0, 0.0, 1.0)
-    cpos = [tuple(cameraPosition_V_E), tuple(focalPoint_V_E), viewUp_V]
 
-    # For parallel projection, set the parallel_scale to control the viewport size.
-    parallel_scale = camera_distance * 0.6
-
-    # To compute the correct camera clipping range, we need to show PyVista the full
-    # extent of the geometry (first and last frames). Add meshes at both positions,
-    # set the camera, compute the clipping range, then clear and restart with just
-    # the first frame.
-    first_panel_surfaces = _get_panel_surfaces_free_flight(
-        airplanes[0],
-        coupled_solver.stackPosition_E_E[0],
-        coupled_solver.stackR_pas_E_to_BP1[0],
+    follow_camera_distance = max(
+        follow_airplane_diagonal * 3.0, airplane_diagonal * 4.0
     )
-    last_step = len(airplanes) - 1
-    last_panel_surfaces = _get_panel_surfaces_free_flight(
-        airplanes[last_step],
-        coupled_solver.stackPosition_E_E[last_step],
-        coupled_solver.stackR_pas_E_to_BP1[last_step],
-    )
+    follow_parallel_scale = max(follow_airplane_diagonal * 1.8, airplane_diagonal * 1.8)
 
-    # Add both first and last frame meshes to compute clipping range.
-    plotter.add_mesh(first_panel_surfaces, show_edges=True, color=_panel_color)
-    plotter.add_mesh(last_panel_surfaces, show_edges=True, color=_panel_color)
+    def _set_follow_camera(body_position_E_E: np.ndarray) -> None:
+        focal_point_V_E = _transformations.apply_T_to_vectors(
+            T_pas_E_to_V,
+            body_position_E_E,
+            has_point=True,
+        )
+        camera_position_V_E = (
+            focal_point_V_E + follow_camera_distance * cameraDirection_V
+        )
+        plotter.camera.position = tuple(camera_position_V_E)
+        plotter.camera.focal_point = tuple(focal_point_V_E)
+        plotter.camera.up = viewUp_V
+        plotter.camera.parallel_scale = follow_parallel_scale
+        plotter.reset_camera_clipping_range()
 
-    # Add body mesh at first and last positions to extend the geometry bounds.
-    if body_mesh_BP1_CgP1 is not None:
-        first_body_surface = _get_body_mesh_surface_free_flight(
-            body_mesh_BP1_CgP1,
+    cpos: list[tuple[float, float, float]] | None = None
+    stored_clipping_range: tuple[float, float] | None = None
+    if camera_mode == "trajectory":
+        # Add some padding to ensure we can see the whole airplane and wake at each end.
+        padding = float(max(airplane_diagonal * 2.0, trajectory_extent * 0.5))
+        camera_distance = trajectory_extent + padding
+        focalPoint_V_E = _transformations.apply_T_to_vectors(
+            T_pas_E_to_V,
+            trajectoryMidpoint_E_E,
+            has_point=True,
+        )
+        cameraPosition_V_E = focalPoint_V_E + camera_distance * cameraDirection_V
+        cpos = [tuple(cameraPosition_V_E), tuple(focalPoint_V_E), viewUp_V]
+        parallel_scale = camera_distance * 0.6
+
+        # To compute the correct camera clipping range, show PyVista the full extent
+        # of the geometry (first and last frames), set the camera, compute the
+        # clipping range, then clear and restart with just the first frame.
+        first_panel_surfaces = _get_panel_surfaces_free_flight(
+            airplanes[0],
             coupled_solver.stackPosition_E_E[0],
             coupled_solver.stackR_pas_E_to_BP1[0],
         )
-        last_body_surface = _get_body_mesh_surface_free_flight(
-            body_mesh_BP1_CgP1,
+        last_step = len(airplanes) - 1
+        last_panel_surfaces = _get_panel_surfaces_free_flight(
+            airplanes[last_step],
             coupled_solver.stackPosition_E_E[last_step],
             coupled_solver.stackR_pas_E_to_BP1[last_step],
         )
-        plotter.add_mesh(first_body_surface, color=_body_mesh_color)
-        plotter.add_mesh(last_body_surface, color=_body_mesh_color)
 
-    # Add wake at last frame if showing wake (this extends the geometry bounds).
-    if show_wake_vortices:
-        wake_surfaces = _get_wake_ring_vortex_surfaces_free_flight(
-            coupled_solver, last_step
-        )
-        if wake_surfaces.n_points > 0:
-            plotter.add_mesh(wake_surfaces, show_edges=True, color=_wake_vortex_color)
+        plotter.add_mesh(first_panel_surfaces, show_edges=True, color=_panel_color)
+        plotter.add_mesh(last_panel_surfaces, show_edges=True, color=_panel_color)
 
-    # Set camera and compute clipping range.
-    plotter.camera.position = cpos[0]
-    plotter.camera.focal_point = cpos[1]
-    plotter.camera.up = cpos[2]
-    plotter.camera.parallel_scale = parallel_scale
-    plotter.reset_camera_clipping_range()
-    stored_clipping_range = plotter.camera.clipping_range
+        if body_mesh_BP1_CgP1 is not None:
+            first_body_surface = _get_body_mesh_surface_free_flight(
+                body_mesh_BP1_CgP1,
+                coupled_solver.stackPosition_E_E[0],
+                coupled_solver.stackR_pas_E_to_BP1[0],
+            )
+            last_body_surface = _get_body_mesh_surface_free_flight(
+                body_mesh_BP1_CgP1,
+                coupled_solver.stackPosition_E_E[last_step],
+                coupled_solver.stackR_pas_E_to_BP1[last_step],
+            )
+            plotter.add_mesh(first_body_surface, color=_body_mesh_color)
+            plotter.add_mesh(last_body_surface, color=_body_mesh_color)
 
-    # Clear the plotter and set up the first frame properly.
-    plotter.clear()
+        if show_wake_vortices:
+            wake_surfaces = _get_wake_ring_vortex_surfaces_free_flight(
+                coupled_solver, last_step
+            )
+            if wake_surfaces.n_points > 0:
+                plotter.add_mesh(
+                    wake_surfaces, show_edges=True, color=_wake_vortex_color
+                )
+
+        assert cpos is not None
+        plotter.camera.position = cpos[0]
+        plotter.camera.focal_point = cpos[1]
+        plotter.camera.up = cpos[2]
+        plotter.camera.parallel_scale = parallel_scale
+        plotter.reset_camera_clipping_range()
+        stored_clipping_range = plotter.camera.clipping_range
+        plotter.clear()
 
     # Get the Panel surfaces of the first time step's Airplane in PyVista axes,
     # relative to the Earth origin.
@@ -1428,6 +1461,14 @@ def animate_free_flight(
     if ground_plane_surface is not None:
         _setup_free_flight_lighting(plotter)
 
+    if camera_mode == "follow_body":
+        _set_follow_camera(body_position_E_E=coupled_solver.stackPosition_E_E[0])
+        cpos = [
+            tuple(plotter.camera.position),
+            tuple(plotter.camera.focal_point),
+            viewUp_V,
+        ]
+
     # Set the Plotter's background color.
     plotter.set_background(color=_plotter_background_color)  # type: ignore[call-arg]
 
@@ -1458,11 +1499,14 @@ def animate_free_flight(
     # Apply the pre-computed clipping range to ensure all geometry throughout the
     # animation is visible. The clipping range defines the near and far planes -
     # objects outside this range won't be rendered.
-    plotter.camera.position = cpos[0]
-    plotter.camera.focal_point = cpos[1]
-    plotter.camera.up = cpos[2]
-    plotter.camera.parallel_scale = parallel_scale
-    plotter.camera.clipping_range = stored_clipping_range
+    if camera_mode == "trajectory":
+        assert cpos is not None
+        assert stored_clipping_range is not None
+        plotter.camera.position = cpos[0]
+        plotter.camera.focal_point = cpos[1]
+        plotter.camera.up = cpos[2]
+        plotter.camera.parallel_scale = parallel_scale
+        plotter.camera.clipping_range = stored_clipping_range
     time.sleep(1)
 
     # Start a list to hold a WebP Image of each frame.
@@ -1504,6 +1548,7 @@ def animate_free_flight(
                 color=_text_color,
             )
 
+        wake_ring_vortex_surfaces: pv.PolyData | None = None
         # If showing wake RingVortices, get their surfaces and plot them.
         if show_wake_vortices:
             wake_ring_vortex_surfaces = _get_wake_ring_vortex_surfaces_free_flight(
@@ -1571,6 +1616,19 @@ def animate_free_flight(
         # Re-enable lighting and shadows after clearing the Plotter.
         if ground_plane_surface is not None:
             _setup_free_flight_lighting(plotter)
+
+        if camera_mode == "follow_body":
+            _set_follow_camera(
+                body_position_E_E=coupled_solver.stackPosition_E_E[current_step]
+            )
+        else:
+            assert cpos is not None
+            assert stored_clipping_range is not None
+            plotter.camera.position = cpos[0]
+            plotter.camera.focal_point = cpos[1]
+            plotter.camera.up = cpos[2]
+            plotter.camera.parallel_scale = parallel_scale
+            plotter.camera.clipping_range = stored_clipping_range
 
         # If saving, append a WebP Image of this frame to the list of Images.
         if save:

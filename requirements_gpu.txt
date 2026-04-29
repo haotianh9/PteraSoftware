@@ -1,0 +1,5 @@
+# Optional GPU acceleration dependencies for Phase 1a GPU Linear Solver
+# Install with: pip install -r requirements_gpu.txt
+# Requires CUDA 12.x to be installed on your system
+
+cupy-cuda12x >= 13.0.0, < 15.0.0

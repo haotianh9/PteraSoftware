@@ -1,0 +1,92 @@
+{
+  "case": "phase1_multibody_free_wake_two_gliding_wings",
+  "description": "Two identical gliding wings are advanced together with a true free wake in the new multibody solver. The summary reports both inter-body symmetry and the current gap versus the legacy single-body solver.",
+  "body_2_initial_offset_E_m": [
+    5.0,
+    0.0,
+    0.0
+  ],
+  "body_2_initial_offset_norm_m": 5.0,
+  "steps_per_reference_period": 24,
+  "prescribed_steps": 24,
+  "free_steps": 96,
+  "single_case_final_position_E_m": [
+    1.586867502840215,
+    1.656870165273842e-17,
+    0.08775397281645612
+  ],
+  "single_case_final_velocity_E_mps": [
+    2.663863050863676,
+    5.767738738140097e-16,
+    0.168350141574861
+  ],
+  "single_case_times_s": [
+    0.0,
+    0.6197916666666666
+  ],
+  "pair_case_times_s": [
+    0.0,
+    0.6197916666666666
+  ],
+  "pair_bodies": [
+    {
+      "body_index": 0,
+      "initial_position_E_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "final_position_E_m": [
+        1.5893058367330941,
+        1.0000918341127721e-16,
+        0.0907723436173459
+      ],
+      "final_velocity_E_mps": [
+        2.674492924264059,
+        1.1178401145808506e-15,
+        0.17351256759520087
+      ],
+      "max_velocity_error_vs_single_mps": 0.01181714224860013,
+      "max_alpha_error_vs_single_deg": 0.1711186796347679,
+      "max_euler_component_error_vs_single_deg": 2.842170943040401e-14,
+      "max_offset_position_error_vs_single_m": 0.0038802106211940045
+    },
+    {
+      "body_index": 1,
+      "initial_position_E_m": [
+        5.0,
+        0.0,
+        0.0
+      ],
+      "final_position_E_m": [
+        6.589305691258974,
+        9.111596499287017e-18,
+        0.0907732382161931
+      ],
+      "final_velocity_E_mps": [
+        2.6744920777565104,
+        2.4014488656970105e-15,
+        0.17351817937860572
+      ],
+      "max_velocity_error_vs_single_mps": 0.011818833590060042,
+      "max_alpha_error_vs_single_deg": 0.1711336904398273,
+      "max_euler_component_error_vs_single_deg": 2.842170943040401e-14,
+      "max_offset_position_error_vs_single_m": 0.003880815161717867
+    }
+  ],
+  "max_velocity_error_vs_single_mps": 0.011818833590060042,
+  "max_alpha_error_vs_single_deg": 0.1711336904398273,
+  "max_euler_component_error_vs_single_deg": 2.842170943040401e-14,
+  "max_offset_position_error_vs_single_m": 0.003880815161717867,
+  "passes_single_case_equivalence_check": false,
+  "max_interbody_velocity_delta_mps": 5.67526986254438e-06,
+  "max_interbody_alpha_delta_deg": 0.00012088920762742816,
+  "max_interbody_euler_delta_deg": 5.684341886080802e-14,
+  "max_interbody_offset_drift_m": 9.063497211080756e-07,
+  "passes_body_symmetry_check": true,
+  "diagnostic_plots": {
+    "body_0_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_gliding_wings_free_flight_inline_x/body_0_velocity_history.png",
+    "body_1_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_gliding_wings_free_flight_inline_x/body_1_velocity_history.png",
+    "interbody_offset_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_gliding_wings_free_flight_inline_x/interbody_offset_history.png"
+  }
+}

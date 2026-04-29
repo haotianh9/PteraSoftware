@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import math
+from collections.abc import Sequence
 
 import numpy as np
 import scipy.optimize as sp_opt
@@ -956,12 +957,21 @@ class CoupledMovement:
 
         self._num_steps: int = self._prescribed_num_steps + self._free_num_steps
 
-        # Generate a tuple of Airplanes for each time step.
-        self._airplanes: tuple[geometry.airplane.Airplane, ...] = tuple(
-            airplane_movement.generate_airplanes(
-                num_steps=self._num_steps, delta_time=self._delta_time
+        # Generate a tuple of Airplanes for each time step. For fully static geometry,
+        # reuse one generated Airplane reference across steps to reduce memory.
+        if airplane_movement.max_period == 0.0:
+            static_airplane = tuple(
+                airplane_movement.generate_airplanes(
+                    num_steps=1, delta_time=self._delta_time
+                )
+            )[0]
+            self._airplanes = tuple(static_airplane for _ in range(self._num_steps))
+        else:
+            self._airplanes = tuple(
+                airplane_movement.generate_airplanes(
+                    num_steps=self._num_steps, delta_time=self._delta_time
+                )
             )
-        )
 
         # Initialize lazy cache variables for derived properties.
         self._max_period: float | None = None
@@ -1038,6 +1048,171 @@ class CoupledMovement:
         """
         if self._static is None:
             self._static = self.max_period == 0
+        return self._static
+
+
+class MultiBodyCoupledMovement:
+    """A coupled free-flight movement container for multiple rigid bodies.
+
+    This is the first multibody extension of the coupled free-flight data model. It
+    keeps one AirplaneMovement per body, one CoupledOperatingPoint per body for the
+    current step, and one generated Airplane per body per time step.
+
+    The current implementation intentionally targets the first practical multibody
+    milestone: multiple rigid gliding wings with static internal geometry. Therefore
+    every AirplaneMovement must currently be static.
+    """
+
+    def __init__(
+        self,
+        airplane_movements: Sequence[airplane_movement_mod.AirplaneMovement],
+        initial_coupled_operating_points: Sequence[
+            operating_point_mod.CoupledOperatingPoint
+        ],
+        initial_positions_E_E: Sequence[np.ndarray | Sequence[float | int]],
+        delta_time: float | int,
+        prescribed_num_steps: int,
+        free_num_steps: int,
+    ) -> None:
+        """Initialize the multibody coupled movement.
+
+        :param airplane_movements: One AirplaneMovement per rigid body.
+        :param initial_coupled_operating_points: One initial CoupledOperatingPoint per
+            rigid body.
+        :param delta_time: The time step in seconds.
+        :param prescribed_num_steps: Number of prescribed wake-building steps.
+        :param free_num_steps: Number of coupled free-flight steps.
+        :return: None
+        """
+        if not isinstance(airplane_movements, Sequence):
+            raise TypeError("airplane_movements must be a sequence.")
+        if not isinstance(initial_coupled_operating_points, Sequence):
+            raise TypeError("initial_coupled_operating_points must be a sequence.")
+        if not isinstance(initial_positions_E_E, Sequence):
+            raise TypeError("initial_positions_E_E must be a sequence.")
+        if len(airplane_movements) < 2:
+            raise ValueError("airplane_movements must contain at least two elements.")
+        if not (
+            len(airplane_movements)
+            == len(initial_coupled_operating_points)
+            == len(initial_positions_E_E)
+        ):
+            raise ValueError(
+                "airplane_movements, initial_coupled_operating_points, and "
+                "initial_positions_E_E must have the same length."
+            )
+
+        validated_airplane_movements: list[airplane_movement_mod.AirplaneMovement] = []
+        for airplane_movement in airplane_movements:
+            if not isinstance(
+                airplane_movement, airplane_movement_mod.AirplaneMovement
+            ):
+                raise TypeError(
+                    "Every element in airplane_movements must be an "
+                    "AirplaneMovement."
+                )
+            if airplane_movement.max_period != 0.0:
+                raise ValueError(
+                    "MultiBodyCoupledMovement currently supports only static "
+                    "AirplaneMovements."
+                )
+            validated_airplane_movements.append(airplane_movement)
+        self._airplane_movements = tuple(validated_airplane_movements)
+
+        validated_initial_coupled_operating_points: list[
+            operating_point_mod.CoupledOperatingPoint
+        ] = []
+        for coupled_operating_point in initial_coupled_operating_points:
+            if not isinstance(
+                coupled_operating_point, operating_point_mod.CoupledOperatingPoint
+            ):
+                raise TypeError(
+                    "Every element in initial_coupled_operating_points must be a "
+                    "CoupledOperatingPoint."
+                )
+            validated_initial_coupled_operating_points.append(coupled_operating_point)
+        self.coupled_operating_points: list[
+            tuple[operating_point_mod.CoupledOperatingPoint, ...]
+        ] = [tuple(validated_initial_coupled_operating_points)]
+        self.positions_E_E: list[tuple[np.ndarray, ...]] = [
+            tuple(
+                _parameter_validation.threeD_number_vectorLike_return_float(
+                    initial_position_E_E, f"initial_positions_E_E[{body_index}]"
+                )
+                for body_index, initial_position_E_E in enumerate(initial_positions_E_E)
+            )
+        ]
+
+        self._delta_time = _parameter_validation.number_in_range_return_float(
+            delta_time, "delta_time", min_val=0.0, min_inclusive=False
+        )
+        self._prescribed_num_steps = _parameter_validation.int_in_range_return_int(
+            prescribed_num_steps,
+            "prescribed_num_steps",
+            min_val=1,
+            min_inclusive=True,
+        )
+        self._free_num_steps = _parameter_validation.int_in_range_return_int(
+            free_num_steps,
+            "free_num_steps",
+            min_val=1,
+            min_inclusive=True,
+        )
+        self._num_steps = self._prescribed_num_steps + self._free_num_steps
+
+        airplanes_by_body = []
+        for airplane_movement in self._airplane_movements:
+            static_airplane = tuple(
+                airplane_movement.generate_airplanes(
+                    num_steps=1,
+                    delta_time=self._delta_time,
+                )
+            )[0]
+            airplanes_by_body.append(
+                tuple(static_airplane for _ in range(self._num_steps))
+            )
+        self._airplanes: tuple[tuple[geometry.airplane.Airplane, ...], ...] = tuple(
+            tuple(body_airplanes[step] for body_airplanes in airplanes_by_body)
+            for step in range(self._num_steps)
+        )
+
+        self._static = True
+        self._max_period = 0.0
+
+    @property
+    def airplane_movements(self) -> tuple[airplane_movement_mod.AirplaneMovement, ...]:
+        return self._airplane_movements
+
+    @property
+    def delta_time(self) -> float:
+        return self._delta_time
+
+    @property
+    def prescribed_num_steps(self) -> int:
+        return self._prescribed_num_steps
+
+    @property
+    def free_num_steps(self) -> int:
+        return self._free_num_steps
+
+    @property
+    def num_steps(self) -> int:
+        return self._num_steps
+
+    @property
+    def airplanes(self) -> tuple[tuple[geometry.airplane.Airplane, ...], ...]:
+        return self._airplanes
+
+    @property
+    def initial_positions_by_step(self) -> list[tuple[np.ndarray, ...]]:
+        return self.positions_E_E
+
+    @property
+    def max_period(self) -> float:
+        return self._max_period
+
+    @property
+    def static(self) -> bool:
         return self._static
 
 

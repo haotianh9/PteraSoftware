@@ -1,0 +1,57 @@
+{
+  "case": "01_gliding_wing",
+  "geometry_representation": "single_three_station_wing_no_center_gap",
+  "pitch_mode": "fixed",
+  "wake_model": "free",
+  "weight_n": 0.0235,
+  "fixed_pitch_deg": 5.0,
+  "delta_time_s": 0.005208333333333333,
+  "reference_period_s": 0.125,
+  "steps_per_reference_period": 24,
+  "prescribed_steps": 96,
+  "free_steps": 480,
+  "initial_speed_mps": 3.5,
+  "initial_alpha_deg": 5.0,
+  "final_position_E_m": [
+    10.052052987405261,
+    2.521113601382022e-13,
+    0.06969247296178434
+  ],
+  "final_velocity_E_mps": [
+    3.2081554376990224,
+    -9.351097000550857e-13,
+    0.05029894828320608
+  ],
+  "initial_kinetic_energy_j": 0.014677540240551056,
+  "final_kinetic_energy_j": 0.012334874573424706,
+  "initial_potential_energy_j": -0.0,
+  "final_potential_energy_j": -0.0016439257017150978,
+  "initial_total_energy_j": 0.014677540240551056,
+  "final_total_energy_j": 0.010690948871709608,
+  "total_energy_drift_j": -0.003986591368841448,
+  "last_reference_period_mean_velocity_E_mps": [
+    3.2119213640022064,
+    -8.231387095705314e-13,
+    0.04957264911757898
+  ],
+  "last_reference_period_mean_alpha_deg": 5.8842363012797305,
+  "last_2_reference_period_mean_velocity_E_mps": [
+    3.2160155392659493,
+    -7.262968449123184e-13,
+    0.04878455291809174
+  ],
+  "last_2_reference_period_mean_alpha_deg": 5.869093132306115,
+  "last_5_reference_period_mean_velocity_E_mps": [
+    3.229376440441728,
+    -5.1704627223955e-13,
+    0.04622378438415494
+  ],
+  "last_5_reference_period_mean_alpha_deg": 5.820239535186457,
+  "last_10_reference_period_mean_velocity_E_mps": [
+    3.2556924293438194,
+    -3.258120958755939e-13,
+    0.04123079273927245
+  ],
+  "last_10_reference_period_mean_alpha_deg": 5.7265810100177585,
+  "pitch_span_deg": 0.0
+}

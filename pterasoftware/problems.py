@@ -356,6 +356,117 @@ class CoupledSteadyProblem:
         return self._coupled_operating_point
 
 
+class MultiBodyCoupledSteadyProblem:
+    """A steady multibody aerodynamic problem for one coupled time step.
+
+    Each airplane carries its own CoupledOperatingPoint. The current implementation
+    expresses all panel coordinates in a shared Earth-frame solve space so multiple
+    freely moving rigid bodies can be solved together aerodynamically.
+    """
+
+    def __init__(
+        self,
+        airplanes: Sequence[geometry.airplane.Airplane],
+        coupled_operating_points: Sequence[operating_point_mod.CoupledOperatingPoint],
+        positions_E_E: Sequence[np.ndarray | Sequence[float | int]],
+    ) -> None:
+        """Initialize the multibody coupled steady problem."""
+        if not isinstance(airplanes, Sequence):
+            raise TypeError("airplanes must be a sequence.")
+        if not isinstance(coupled_operating_points, Sequence):
+            raise TypeError("coupled_operating_points must be a sequence.")
+        if not isinstance(positions_E_E, Sequence):
+            raise TypeError("positions_E_E must be a sequence.")
+        if len(airplanes) < 2:
+            raise ValueError("airplanes must contain at least two elements.")
+        if not (len(airplanes) == len(coupled_operating_points) == len(positions_E_E)):
+            raise ValueError(
+                "airplanes, coupled_operating_points, and positions_E_E must have the "
+                "same length."
+            )
+
+        validated_airplanes: list[geometry.airplane.Airplane] = []
+        validated_coupled_operating_points: list[
+            operating_point_mod.CoupledOperatingPoint
+        ] = []
+        validated_positions_E_E: list[np.ndarray] = []
+        for body_index, (airplane, coupled_operating_point, position_E_E) in enumerate(
+            zip(airplanes, coupled_operating_points, positions_E_E, strict=True)
+        ):
+            if not isinstance(airplane, geometry.airplane.Airplane):
+                raise TypeError("Every element in airplanes must be an Airplane.")
+            if not isinstance(
+                coupled_operating_point, operating_point_mod.CoupledOperatingPoint
+            ):
+                raise TypeError(
+                    "Every element in coupled_operating_points must be a "
+                    "CoupledOperatingPoint."
+                )
+            validated_airplanes.append(airplane)
+            validated_coupled_operating_points.append(coupled_operating_point)
+            validated_positions_E_E.append(
+                _parameter_validation.threeD_number_vectorLike_return_float(
+                    position_E_E, f"positions_E_E[{body_index}]"
+                )
+            )
+
+        self._airplanes = tuple(validated_airplanes)
+        self._coupled_operating_points = tuple(validated_coupled_operating_points)
+        self._positions_E_E = tuple(validated_positions_E_E)
+
+        for airplane, coupled_operating_point, body_position_E_E in zip(
+            self._airplanes,
+            self._coupled_operating_points,
+            self._positions_E_E,
+            strict=True,
+        ):
+            T_pas_G_Cg_to_E_Cg = coupled_operating_point.T_pas_GP1_CgP1_to_E_CgP1
+
+            for wing in airplane.wings:
+                _panels = wing.panels
+                assert _panels is not None
+
+                for panel in np.ravel(_panels):
+                    panel.Frpp_GP1_CgP1 = (
+                        _transformations.apply_T_to_vectors(
+                            T_pas_G_Cg_to_E_Cg, panel.Frpp_G_Cg, has_point=True
+                        )
+                        + body_position_E_E
+                    )
+                    panel.Flpp_GP1_CgP1 = (
+                        _transformations.apply_T_to_vectors(
+                            T_pas_G_Cg_to_E_Cg, panel.Flpp_G_Cg, has_point=True
+                        )
+                        + body_position_E_E
+                    )
+                    panel.Blpp_GP1_CgP1 = (
+                        _transformations.apply_T_to_vectors(
+                            T_pas_G_Cg_to_E_Cg, panel.Blpp_G_Cg, has_point=True
+                        )
+                        + body_position_E_E
+                    )
+                    panel.Brpp_GP1_CgP1 = (
+                        _transformations.apply_T_to_vectors(
+                            T_pas_G_Cg_to_E_Cg, panel.Brpp_G_Cg, has_point=True
+                        )
+                        + body_position_E_E
+                    )
+
+    @property
+    def airplanes(self) -> tuple[geometry.airplane.Airplane, ...]:
+        return self._airplanes
+
+    @property
+    def coupled_operating_points(
+        self,
+    ) -> tuple[operating_point_mod.CoupledOperatingPoint, ...]:
+        return self._coupled_operating_points
+
+    @property
+    def positions_E_E(self) -> tuple[np.ndarray, ...]:
+        return self._positions_E_E
+
+
 class CoupledUnsteadyProblem:
     """A class used to contain unsteady aerodynamics problems that will be used for
     coupled unsteady simulations.
@@ -494,4 +605,132 @@ class CoupledUnsteadyProblem:
 
     @property
     def mujoco_model(self) -> _mujoco_model.MuJoCoModel:
+        return self._mujoco_model
+
+
+class MultiBodyCoupledUnsteadyProblem:
+    """An unsteady coupled free-flight problem for multiple rigid bodies.
+
+    The current implementation is intentionally scoped to the first practical multibody
+    milestone: multiple static-geometry gliding wings coupled to MuJoCo.
+    """
+
+    def __init__(
+        self,
+        coupled_movement: movements.movement.MultiBodyCoupledMovement,
+        I_BP1_CgP1s: Sequence[np.ndarray | Sequence[Sequence[float | int]]],
+        external_forces_fn: (
+            Callable[
+                [
+                    int,
+                    operating_point_mod.CoupledOperatingPoint,
+                    geometry.airplane.Airplane,
+                ],
+                tuple[np.ndarray, np.ndarray],
+            ]
+            | None
+        ) = None,
+        extra_xml: dict[str, str] | None = None,
+        mujoco_assets: dict[str, bytes] | None = None,
+    ) -> None:
+        """Initialize the multibody coupled unsteady problem."""
+        if not isinstance(
+            coupled_movement, movements.movement.MultiBodyCoupledMovement
+        ):
+            raise TypeError("coupled_movement must be a MultiBodyCoupledMovement.")
+        self._coupled_movement = coupled_movement
+
+        if not isinstance(I_BP1_CgP1s, Sequence):
+            raise TypeError("I_BP1_CgP1s must be a sequence of inertia matrices.")
+        if len(I_BP1_CgP1s) != len(self._coupled_movement.airplanes[0]):
+            raise ValueError("I_BP1_CgP1s must have one inertia matrix per rigid body.")
+
+        validated_inertias: list[np.ndarray] = []
+        for body_index, inertia_matrix in enumerate(I_BP1_CgP1s):
+            validated_inertia = (
+                _parameter_validation.m_by_n_number_arrayLike_return_float(
+                    inertia_matrix,
+                    f"I_BP1_CgP1s[{body_index}]",
+                    3,
+                    3,
+                )
+            )
+            if not np.allclose(validated_inertia, validated_inertia.T):
+                raise ValueError(f"I_BP1_CgP1s[{body_index}] must be symmetric.")
+            validated_inertia.flags.writeable = False
+            validated_inertias.append(validated_inertia)
+        self._I_BP1_CgP1s = tuple(validated_inertias)
+
+        if external_forces_fn is not None and not callable(external_forces_fn):
+            raise TypeError("external_forces_fn must be callable or None.")
+        self._external_forces_fn = external_forces_fn
+
+        self._num_steps = self._coupled_movement.num_steps
+        self._delta_time = self._coupled_movement.delta_time
+
+        self.forces_W: list[np.ndarray] = []
+        self.forceCoefficients_W: list[np.ndarray] = []
+        self.moments_W_Cg: list[np.ndarray] = []
+        self.momentCoefficients_W_Cg: list[np.ndarray] = []
+
+        self._airplanes = self._coupled_movement.airplanes
+
+        initial_operating_points = self._coupled_movement.coupled_operating_points[0]
+        initial_positions_E_E = self._coupled_movement.positions_E_E[0]
+        self.multi_body_coupled_steady_problems = [
+            MultiBodyCoupledSteadyProblem(
+                airplanes=self._airplanes[0],
+                coupled_operating_points=initial_operating_points,
+                positions_E_E=initial_positions_E_E,
+            )
+        ]
+
+        self._mujoco_model = _mujoco_model.MultiBodyMuJoCoModel(
+            airplanes=self._airplanes[0],
+            coupled_operating_points=initial_operating_points,
+            I_BP1_CgP1s=self._I_BP1_CgP1s,
+            initial_positions_E_E=initial_positions_E_E,
+            delta_time=self._delta_time,
+            extra_xml=extra_xml,
+            mujoco_assets=mujoco_assets,
+        )
+
+    @property
+    def coupled_movement(self) -> movements.movement.MultiBodyCoupledMovement:
+        return self._coupled_movement
+
+    @property
+    def I_BP1_CgP1s(self) -> tuple[np.ndarray, ...]:
+        return self._I_BP1_CgP1s
+
+    @property
+    def external_forces_fn(
+        self,
+    ) -> (
+        Callable[
+            [
+                int,
+                operating_point_mod.CoupledOperatingPoint,
+                geometry.airplane.Airplane,
+            ],
+            tuple[np.ndarray, np.ndarray],
+        ]
+        | None
+    ):
+        return self._external_forces_fn
+
+    @property
+    def num_steps(self) -> int:
+        return self._num_steps
+
+    @property
+    def delta_time(self) -> float:
+        return self._delta_time
+
+    @property
+    def airplanes(self) -> tuple[tuple[geometry.airplane.Airplane, ...], ...]:
+        return self._airplanes
+
+    @property
+    def mujoco_model(self) -> _mujoco_model.MultiBodyMuJoCoModel:
         return self._mujoco_model
