@@ -699,6 +699,7 @@ def run_gap_case(
     standard_render_wake: bool,
     standard_render_follow_body_index: int,
     clamp_yaw_deg: float | None,
+    trajectory_render: bool,
 ) -> dict[str, Any]:
     """Run one inline-gap two-flapping-body case and save outputs."""
     coupled_problem, coupled_solver = build_problem(
@@ -753,7 +754,7 @@ def run_gap_case(
         alphas_deg=alphas_deg,
         euler_angles_deg=euler_angles_deg,
     )
-    if len(times_s) >= 2:
+    if len(times_s) >= 2 and trajectory_render:
         try:
             movie_path = save_interbody_trajectory_movie(
                 output_dir=output_dir,
@@ -802,6 +803,7 @@ def run_gap_sweep(
     standard_render_wake: bool,
     standard_render_follow_body_index: int,
     clamp_yaw_deg: float | None,
+    trajectory_render: bool,
 ) -> dict[str, Any]:
     """Run the requested initial-gap sweep and save per-gap summaries."""
     output_root.mkdir(parents=True, exist_ok=True)
@@ -827,6 +829,7 @@ def run_gap_sweep(
             standard_render_wake=standard_render_wake,
             standard_render_follow_body_index=standard_render_follow_body_index,
             clamp_yaw_deg=clamp_yaw_deg,
+            trajectory_render=trajectory_render,
         )
         gap_summaries.append(summary)
         print(
@@ -946,6 +949,12 @@ def parse_args() -> argparse.Namespace:
         help="Body index to follow in the standard wake render camera.",
     )
     parser.add_argument(
+        "--trajectory-render",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Render lightweight interbody trajectory movie for each gap case.",
+    )
+    parser.add_argument(
         "--clamp-yaw",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -979,6 +988,7 @@ def main() -> None:
         standard_render_wake=args.standard_render_wake,
         standard_render_follow_body_index=args.standard_render_follow_body_index,
         clamp_yaw_deg=clamp_yaw_deg,
+        trajectory_render=args.trajectory_render,
     )
 
 

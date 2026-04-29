@@ -28,6 +28,7 @@ class TestMultiBodyTwoFlappingInlineGapSweep(unittest.TestCase):
             standard_render_wake=False,
             standard_render_follow_body_index=0,
             clamp_yaw_deg=0.0,
+            trajectory_render=False,
         )
         cls.summary = cls.sweep_summary["gap_results"][0]
 
