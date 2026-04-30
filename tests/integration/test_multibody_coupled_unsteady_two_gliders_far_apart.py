@@ -33,6 +33,12 @@ class TestMultiBodyTwoGlidersFarApart(unittest.TestCase):
         """The lateral separation should remain constant to tight tolerance."""
         self.assertLess(self.summary["max_interbody_offset_drift_m"], 1e-5)
 
+    def test_far_apart_bodies_remain_close_to_single_body_solution(self) -> None:
+        """A shared-frame bug can preserve symmetry but still miss the single-body case."""
+        self.assertLess(self.summary["max_velocity_error_vs_single_mps"], 5e-3)
+        self.assertLess(self.summary["max_alpha_error_vs_single_deg"], 5e-2)
+        self.assertLess(self.summary["max_offset_position_error_vs_single_m"], 5e-4)
+
 
 if __name__ == "__main__":
     unittest.main()

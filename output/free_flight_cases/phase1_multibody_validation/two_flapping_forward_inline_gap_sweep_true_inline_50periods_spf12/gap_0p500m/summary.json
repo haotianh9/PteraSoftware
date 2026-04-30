@@ -1,0 +1,65 @@
+{
+  "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+  "inline_gap_m": 0.5,
+  "gap_axis": "x",
+  "body_2_initial_offset_E_m": [
+    -0.5,
+    0.0,
+    0.0
+  ],
+  "flapping_frequency_hz": 8.0,
+  "flapping_period_s": 0.125,
+  "steps_per_flap": 12,
+  "fixed_pitch_deg": 5.0,
+  "fixed_yaw_deg": 0.0,
+  "prescribed_steps": 48,
+  "free_steps": 552,
+  "periods_total_requested": 50.0,
+  "periods_total_completed": 34.08333333333333,
+  "time_range_s": [
+    0.0,
+    4.260416666666666
+  ],
+  "run_status": "failed",
+  "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+  "body_0_final_position_E_m": [
+    16.422003381969994,
+    -4.29260152348535,
+    -0.07998046406984671
+  ],
+  "body_1_final_position_E_m": [
+    14.504375402409181,
+    -1.9429601285090665,
+    0.2721395705388704
+  ],
+  "body_0_final_velocity_E_mps": [
+    95.10843685849676,
+    124.16602423864617,
+    -200.54408577778236
+  ],
+  "body_1_final_velocity_E_mps": [
+    6.634244404450967,
+    7.688328018937011,
+    6.006373899300008
+  ],
+  "body_0_last_flap_mean_velocity_E_mps": [
+    17.045897030071853,
+    20.625658190771134,
+    -18.787655192177976
+  ],
+  "body_1_last_flap_mean_velocity_E_mps": [
+    5.434188540089679,
+    6.90843793758225,
+    0.23555662160424937
+  ],
+  "max_interbody_velocity_delta_mps": 253.09648128699934,
+  "max_interbody_alpha_delta_deg": 48.52893550285722,
+  "max_interbody_euler_delta_deg": 182.9578179338835,
+  "max_interbody_offset_drift_m": 2.766671699387661,
+  "passes_body_symmetry_check": false,
+  "diagnostic_plots": {
+    "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_0p500m/body_0_velocity_history.png",
+    "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_0p500m/body_1_velocity_history.png",
+    "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_0p500m/interbody_offset_history.png"
+  }
+}

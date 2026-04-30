@@ -1,0 +1,80 @@
+{
+  "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+  "gaps_m": [
+    2.0
+  ],
+  "gap_axis": "x",
+  "prescribed_steps": 4,
+  "free_steps": 8,
+  "steps_per_flap": 8,
+  "fixed_pitch_deg": 5.0,
+  "fixed_yaw_deg": 0.0,
+  "flapping_period_s": 0.125,
+  "gap_results": [
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 2.0,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -2.0,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 8,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 4,
+      "free_steps": 8,
+      "periods_total_requested": 1.5,
+      "periods_total_completed": 1.5,
+      "time_range_s": [
+        0.0,
+        0.1875
+      ],
+      "run_status": "ok",
+      "error_message": null,
+      "body_0_final_position_E_m": [
+        0.46927221316775825,
+        1.6101958554494818e-18,
+        0.00905804456936584
+      ],
+      "body_1_final_position_E_m": [
+        -1.5307278409536031,
+        -2.7108400258489155e-19,
+        0.009057914128044565
+      ],
+      "body_0_final_velocity_E_mps": [
+        2.44721185774678,
+        1.0597531483332572e-16,
+        0.697114281804315
+      ],
+      "body_1_final_velocity_E_mps": [
+        2.447210970771137,
+        1.1989413069567827e-17,
+        0.6971114102176469
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        2.5008784464512392,
+        1.3091715774526825e-17,
+        0.11603399916769638
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        2.500877958044368,
+        7.125776920831323e-18,
+        0.11603277616295943
+      ],
+      "max_interbody_velocity_delta_mps": 3.005451011756071e-06,
+      "max_interbody_alpha_delta_deg": 5.67139340219569e-05,
+      "max_interbody_euler_delta_deg": 0.0,
+      "max_interbody_offset_drift_m": 1.412234402609648e-07,
+      "passes_body_symmetry_check": true,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/_test_artifacts/gap_2p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/_test_artifacts/gap_2p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/_test_artifacts/gap_2p000m/interbody_offset_history.png"
+      }
+    }
+  ]
+}

@@ -1,8 +1,7 @@
 """Contains the multibody coupled unsteady ring-vortex solver.
 
 This module implements the first working multibody free-flight slice: multiple rigid
-bodies, one MuJoCo freejoint per body, static internal geometry, and a shared Earth-
-frame aerodynamic solve.
+bodies, one MuJoCo freejoint per body, and a shared Earth-frame aerodynamic solve.
 """
 
 from __future__ import annotations
@@ -37,8 +36,8 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
     The current implementation intentionally targets the first multibody free-flight
     milestone:
 
-    - at least two rigid bodies - static internal geometry only - shared atmosphere
-    across bodies - prescribed or free wake - no image-surface support yet
+    - at least two rigid bodies - shared atmosphere across bodies - prescribed or free
+    wake - no image-surface support yet
     """
 
     def __init__(
@@ -90,6 +89,11 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         self._current_body_positions_E_E = np.zeros((self.num_bodies, 3), dtype=float)
         self._current_body_velocities_E__E = np.zeros((self.num_bodies, 3), dtype=float)
         self._current_body_omegas_E__E = np.zeros((self.num_bodies, 3), dtype=float)
+        self._current_body_R_pas_GP_to_Es = np.zeros(
+            (self.num_bodies, 3, 3), dtype=float
+        )
+        self._last_body_positions_E_E = np.zeros((self.num_bodies, 3), dtype=float)
+        self._last_body_R_pas_GP_to_Es = np.zeros((self.num_bodies, 3, 3), dtype=float)
 
         self._currentStackFreestreamWingInfluences__E = np.empty(0, dtype=float)
         self._currentGridWingWingInfluences__E = np.empty(0, dtype=float)
@@ -120,6 +124,11 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         self.stackFbrv_GP1 = np.empty(0, dtype=float)
         self.stackLbrv_GP1 = np.empty(0, dtype=float)
         self.stackBbrv_GP1 = np.empty(0, dtype=float)
+        self._lastStackCpp_GP1_CgP1 = np.empty(0, dtype=float)
+        self._lastStackCblvpr_GP1_CgP1 = np.empty(0, dtype=float)
+        self._lastStackCblvpf_GP1_CgP1 = np.empty(0, dtype=float)
+        self._lastStackCblvpl_GP1_CgP1 = np.empty(0, dtype=float)
+        self._lastStackCblvpb_GP1_CgP1 = np.empty(0, dtype=float)
 
         self._current_wake_vortex_strengths = np.empty(0, dtype=float)
         self._current_wake_vortex_ages = np.empty(0, dtype=float)
@@ -332,6 +341,11 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         self.stackFbrv_GP1 = np.zeros((self.num_panels, 3), dtype=float)
         self.stackLbrv_GP1 = np.zeros((self.num_panels, 3), dtype=float)
         self.stackBbrv_GP1 = np.zeros((self.num_panels, 3), dtype=float)
+        self._lastStackCpp_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
+        self._lastStackCblvpr_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
+        self._lastStackCblvpf_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
+        self._lastStackCblvpl_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
+        self._lastStackCblvpb_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
 
         num_wake_ring_vortices = self.list_num_wake_vortices[step]
         wake_strengths = self._list_wake_vortex_strengths[step]
@@ -446,13 +460,16 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                     has_point=False,
                 )
             )
+            self._current_body_R_pas_GP_to_Es[body_index] = (
+                coupled_operating_point.T_pas_GP1_CgP1_to_E_CgP1[:3, :3]
+            )
 
     def _initialize_panel_vortices(self, step: int) -> None:
         """Initialize bound ring vortices for one multibody time step."""
         this_problem = self.multi_body_coupled_steady_problems[step]
 
         for airplane_index, airplane in enumerate(this_problem.airplanes):
-            for wing in airplane.wings:
+            for wing_index, wing in enumerate(airplane.wings):
                 _num_spanwise = wing.num_spanwise_panels
                 assert _num_spanwise is not None
 
@@ -486,14 +503,60 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                             _Brpp = panel.Brpp_GP1_CgP1
                             assert _Blpp is not None
                             assert _Brpp is not None
-                            apparent_velocities = (
-                                self._calculate_apparent_velocities_at_points(
-                                    points_E=np.vstack([_Blpp, _Brpp]),
-                                    airplane_indices=np.array(
-                                        [airplane_index, airplane_index], dtype=int
-                                    ),
-                                )
+
+                            current_points_E = np.vstack([_Blpp, _Brpp])
+                            airplane_indices = np.array(
+                                [airplane_index, airplane_index], dtype=int
                             )
+                            if step == 0:
+                                current_body_states = (
+                                    self._get_body_state_arrays_for_step(step)
+                                )
+                                apparent_velocities = self._calculate_surface_apparent_velocities_from_body_states(
+                                    points_E=current_points_E,
+                                    airplane_indices=airplane_indices,
+                                    last_points_E=None,
+                                    current_positions_E_E=current_body_states[0],
+                                    current_velocities_E__E=current_body_states[1],
+                                    current_omegas_E__E=current_body_states[2],
+                                    current_R_pas_GP_to_Es=current_body_states[3],
+                                )
+                            else:
+                                last_problem = self.multi_body_coupled_steady_problems[
+                                    step - 1
+                                ]
+                                last_panel = (
+                                    last_problem.airplanes[airplane_index]
+                                    .wings[wing_index]
+                                    .panels[chordwise_position, spanwise_position]
+                                )
+                                assert last_panel.Blpp_GP1_CgP1 is not None
+                                assert last_panel.Brpp_GP1_CgP1 is not None
+                                last_points_E = np.vstack(
+                                    [
+                                        last_panel.Blpp_GP1_CgP1,
+                                        last_panel.Brpp_GP1_CgP1,
+                                    ]
+                                )
+                                current_body_states = (
+                                    self._get_body_state_arrays_for_step(step)
+                                )
+                                last_body_states = self._get_body_state_arrays_for_step(
+                                    step - 1
+                                )
+                                apparent_velocities = self._calculate_surface_apparent_velocities_from_body_states(
+                                    points_E=current_points_E,
+                                    airplane_indices=airplane_indices,
+                                    last_points_E=last_points_E,
+                                    current_positions_E_E=current_body_states[0],
+                                    current_velocities_E__E=current_body_states[1],
+                                    current_omegas_E__E=current_body_states[2],
+                                    current_R_pas_GP_to_Es=current_body_states[3],
+                                    last_positions_E_E=last_body_states[0],
+                                    last_R_pas_GP_to_Es=last_body_states[3],
+                                    delta_time=self.delta_time,
+                                )
+
                             Blrvp = (
                                 _Blpp + apparent_velocities[0] * self.delta_time * 0.25
                             )
@@ -561,6 +624,21 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             last_problem = self.multi_body_coupled_steady_problems[
                 self._current_step - 1
             ]
+            for body_index, (
+                last_coupled_operating_point,
+                last_position_E_E,
+            ) in enumerate(
+                zip(
+                    last_problem.coupled_operating_points,
+                    last_problem.positions_E_E,
+                    strict=True,
+                )
+            ):
+                self._last_body_positions_E_E[body_index] = last_position_E_E
+                self._last_body_R_pas_GP_to_Es[body_index] = (
+                    last_coupled_operating_point.T_pas_GP1_CgP1_to_E_CgP1[:3, :3]
+                )
+
             global_panel_position = 0
             for last_airplane in last_problem.airplanes:
                 for last_wing in last_airplane.wings:
@@ -569,6 +647,21 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                     for last_panel in np.ravel(_last_panels):
                         last_ring_vortex = last_panel.ring_vortex
                         assert last_ring_vortex is not None
+                        self._lastStackCpp_GP1_CgP1[global_panel_position, :] = (
+                            last_panel.Cpp_GP1_CgP1
+                        )
+                        self._lastStackCblvpr_GP1_CgP1[global_panel_position, :] = (
+                            last_ring_vortex.right_leg.Clvp_GP1_CgP1
+                        )
+                        self._lastStackCblvpf_GP1_CgP1[global_panel_position, :] = (
+                            last_ring_vortex.front_leg.Clvp_GP1_CgP1
+                        )
+                        self._lastStackCblvpl_GP1_CgP1[global_panel_position, :] = (
+                            last_ring_vortex.left_leg.Clvp_GP1_CgP1
+                        )
+                        self._lastStackCblvpb_GP1_CgP1[global_panel_position, :] = (
+                            last_ring_vortex.back_leg.Clvp_GP1_CgP1
+                        )
                         self._last_bound_vortex_strengths[global_panel_position] = (
                             last_ring_vortex.strength
                         )
@@ -605,9 +698,10 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
 
     def _calculate_freestream_wing_influences(self) -> None:
         """Calculate the normal apparent-flow influence at each collocation point."""
-        apparent_velocities = self._calculate_apparent_velocities_at_points(
+        apparent_velocities = self._calculate_surface_apparent_velocities_at_points(
             points_E=self.stackCpp_GP1_CgP1,
             airplane_indices=self.panel_airplane_indices,
+            last_points_E=self._lastStackCpp_GP1_CgP1,
         )
         self._currentStackFreestreamWingInfluences__E = np.einsum(
             "ij,ij->i", self.stackUnitNormals_GP1, apparent_velocities
@@ -795,29 +889,37 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             self.stackCblvpr_GP1_CgP1,
             bound_singularity_counts=bound_singularity_counts,
             wake_singularity_counts=wake_singularity_counts,
-        ) + self._calculate_apparent_velocities_at_points(
-            self.stackCblvpr_GP1_CgP1, self.panel_airplane_indices
+        ) + self._calculate_surface_apparent_velocities_at_points(
+            self.stackCblvpr_GP1_CgP1,
+            self.panel_airplane_indices,
+            self._lastStackCblvpr_GP1_CgP1,
         )
         velocity_front = self.calculate_solution_velocity(
             self.stackCblvpf_GP1_CgP1,
             bound_singularity_counts=bound_singularity_counts,
             wake_singularity_counts=wake_singularity_counts,
-        ) + self._calculate_apparent_velocities_at_points(
-            self.stackCblvpf_GP1_CgP1, self.panel_airplane_indices
+        ) + self._calculate_surface_apparent_velocities_at_points(
+            self.stackCblvpf_GP1_CgP1,
+            self.panel_airplane_indices,
+            self._lastStackCblvpf_GP1_CgP1,
         )
         velocity_left = self.calculate_solution_velocity(
             self.stackCblvpl_GP1_CgP1,
             bound_singularity_counts=bound_singularity_counts,
             wake_singularity_counts=wake_singularity_counts,
-        ) + self._calculate_apparent_velocities_at_points(
-            self.stackCblvpl_GP1_CgP1, self.panel_airplane_indices
+        ) + self._calculate_surface_apparent_velocities_at_points(
+            self.stackCblvpl_GP1_CgP1,
+            self.panel_airplane_indices,
+            self._lastStackCblvpl_GP1_CgP1,
         )
         velocity_back = self.calculate_solution_velocity(
             self.stackCblvpb_GP1_CgP1,
             bound_singularity_counts=bound_singularity_counts,
             wake_singularity_counts=wake_singularity_counts,
-        ) + self._calculate_apparent_velocities_at_points(
-            self.stackCblvpb_GP1_CgP1, self.panel_airplane_indices
+        ) + self._calculate_surface_apparent_velocities_at_points(
+            self.stackCblvpb_GP1_CgP1,
+            self.panel_airplane_indices,
+            self._lastStackCblvpb_GP1_CgP1,
         )
 
         expected_bound_collinearity = 0
@@ -1197,8 +1299,18 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                                     np.expand_dims(first_row_point_E, axis=0)
                                 )
                             )
+                            surface_apparent_velocity_E = np.squeeze(
+                                self._calculate_rigid_body_apparent_velocities_at_points(
+                                    points_E=np.expand_dims(first_row_point_E, axis=0),
+                                    airplane_indices=np.array(
+                                        [airplane_index], dtype=int
+                                    ),
+                                )
+                            )
                             second_row[0, spanwise_point_id] = (
-                                first_row_point_E + induced_velocity_E * self.delta_time
+                                first_row_point_E
+                                + (surface_apparent_velocity_E + induced_velocity_E)
+                                * self.delta_time
                             )
                     next_wing.gridWrvp_GP1_CgP1 = np.vstack(
                         (next_wing.gridWrvp_GP1_CgP1, second_row)
@@ -1311,14 +1423,17 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                         back_left = next_grid[chordwise_id + 1, spanwise_id]
                         back_right = next_grid[chordwise_id + 1, spanwise_id + 1]
 
+                        wake_age: float | None = None
                         if chordwise_id == 0:
                             strength = this_wing.panels[
                                 -1, spanwise_id
                             ].ring_vortex.strength
                         else:
-                            strength = this_wake_ring_vortices[
+                            old_wake_ring_vortex = this_wake_ring_vortices[
                                 chordwise_id - 1, spanwise_id
-                            ].strength
+                            ]
+                            strength = old_wake_ring_vortex.strength
+                            wake_age = old_wake_ring_vortex.age + self.delta_time
 
                         next_wing.wake_ring_vortices[chordwise_id, spanwise_id] = (
                             _vortices.ring_vortex.RingVortex(
@@ -1329,25 +1444,131 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                                 strength=strength,
                             )
                         )
-                        next_wing.wake_ring_vortices[chordwise_id, spanwise_id].age = (
-                            chordwise_id + 1
-                        ) * self.delta_time
+                        if wake_age is not None:
+                            next_wing.wake_ring_vortices[
+                                chordwise_id, spanwise_id
+                            ].age = wake_age
 
-    def _calculate_apparent_velocities_at_points(
+    def _get_body_state_arrays_for_step(
+        self,
+        step: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return per-body positions, velocities, angular rates, and GP-to-E
+        rotations."""
+        problem = self.multi_body_coupled_steady_problems[step]
+        positions_E_E = np.vstack(problem.positions_E_E)
+        velocities_E__E = np.zeros((self.num_bodies, 3), dtype=float)
+        omegas_E__E = np.zeros((self.num_bodies, 3), dtype=float)
+        R_pas_GP_to_Es = np.zeros((self.num_bodies, 3, 3), dtype=float)
+
+        for body_index, coupled_operating_point in enumerate(
+            problem.coupled_operating_points
+        ):
+            velocities_E__E[body_index] = coupled_operating_point.vCg_E__E
+            omegas_E__E[body_index] = _transformations.apply_T_to_vectors(
+                coupled_operating_point.T_pas_BP1_CgP1_to_E_CgP1,
+                coupled_operating_point.omegas_BP1__E,
+                has_point=False,
+            )
+            R_pas_GP_to_Es[body_index] = (
+                coupled_operating_point.T_pas_GP1_CgP1_to_E_CgP1[:3, :3]
+            )
+
+        return positions_E_E, velocities_E__E, omegas_E__E, R_pas_GP_to_Es
+
+    @staticmethod
+    def _calculate_surface_apparent_velocities_from_body_states(
+        points_E: np.ndarray,
+        airplane_indices: np.ndarray,
+        last_points_E: np.ndarray | None,
+        current_positions_E_E: np.ndarray,
+        current_velocities_E__E: np.ndarray,
+        current_omegas_E__E: np.ndarray,
+        current_R_pas_GP_to_Es: np.ndarray,
+        last_positions_E_E: np.ndarray | None = None,
+        last_R_pas_GP_to_Es: np.ndarray | None = None,
+        delta_time: float | None = None,
+    ) -> np.ndarray:
+        """Return apparent velocities from current rigid motion plus internal motion."""
+        apparent_velocities = np.zeros_like(points_E, dtype=float)
+        include_internal_motion = last_points_E is not None
+
+        if include_internal_motion and (
+            last_positions_E_E is None
+            or last_R_pas_GP_to_Es is None
+            or delta_time is None
+        ):
+            raise ValueError(
+                "last body states and delta_time are required when last_points_E is "
+                "provided."
+            )
+
+        for row_index, airplane_index in enumerate(airplane_indices):
+            current_position_E_E = current_positions_E_E[airplane_index]
+            current_r_E = points_E[row_index] - current_position_E_E
+            current_omega_E_rad = np.deg2rad(current_omegas_E__E[airplane_index])
+            current_point_velocity_E = current_velocities_E__E[
+                airplane_index
+            ] + np.cross(current_omega_E_rad, current_r_E)
+            apparent_velocities[row_index] = -current_point_velocity_E
+
+            if include_internal_motion:
+                assert last_positions_E_E is not None
+                assert last_R_pas_GP_to_Es is not None
+                assert delta_time is not None
+                last_r_E = last_points_E[row_index] - last_positions_E_E[airplane_index]
+                current_R_pas_GP_to_E = current_R_pas_GP_to_Es[airplane_index]
+                last_R_pas_GP_to_E = last_R_pas_GP_to_Es[airplane_index]
+                last_r_mapped_to_current_attitude_E = (
+                    current_R_pas_GP_to_E @ last_R_pas_GP_to_E.T @ last_r_E
+                )
+                internal_point_velocity_E = (
+                    current_r_E - last_r_mapped_to_current_attitude_E
+                ) / delta_time
+                apparent_velocities[row_index] -= internal_point_velocity_E
+
+        return apparent_velocities
+
+    def _calculate_rigid_body_apparent_velocities_at_points(
         self,
         points_E: np.ndarray,
         airplane_indices: np.ndarray,
     ) -> np.ndarray:
         """Return apparent fluid velocities at Earth-frame points on the bodies."""
-        apparent_velocities = np.zeros_like(points_E, dtype=float)
-        for row_index, airplane_index in enumerate(airplane_indices):
-            r_E = points_E[row_index] - self._current_body_positions_E_E[airplane_index]
-            omegas_E_rad = np.deg2rad(self._current_body_omegas_E__E[airplane_index])
-            point_velocity_E = self._current_body_velocities_E__E[
-                airplane_index
-            ] + np.cross(omegas_E_rad, r_E)
-            apparent_velocities[row_index] = -point_velocity_E
-        return apparent_velocities
+        return self._calculate_surface_apparent_velocities_from_body_states(
+            points_E=points_E,
+            airplane_indices=airplane_indices,
+            last_points_E=None,
+            current_positions_E_E=self._current_body_positions_E_E,
+            current_velocities_E__E=self._current_body_velocities_E__E,
+            current_omegas_E__E=self._current_body_omegas_E__E,
+            current_R_pas_GP_to_Es=self._current_body_R_pas_GP_to_Es,
+        )
+
+    def _calculate_surface_apparent_velocities_at_points(
+        self,
+        points_E: np.ndarray,
+        airplane_indices: np.ndarray,
+        last_points_E: np.ndarray,
+    ) -> np.ndarray:
+        """Return apparent velocities including prescribed internal body motion."""
+        if self._current_step < 1:
+            return self._calculate_rigid_body_apparent_velocities_at_points(
+                points_E=points_E,
+                airplane_indices=airplane_indices,
+            )
+        return self._calculate_surface_apparent_velocities_from_body_states(
+            points_E=points_E,
+            airplane_indices=airplane_indices,
+            last_points_E=last_points_E,
+            current_positions_E_E=self._current_body_positions_E_E,
+            current_velocities_E__E=self._current_body_velocities_E__E,
+            current_omegas_E__E=self._current_body_omegas_E__E,
+            current_R_pas_GP_to_Es=self._current_body_R_pas_GP_to_Es,
+            last_positions_E_E=self._last_body_positions_E_E,
+            last_R_pas_GP_to_Es=self._last_body_R_pas_GP_to_Es,
+            delta_time=self.delta_time,
+        )
 
     @staticmethod
     def _extract_euler_angles_deg(R_pas_E_to_BP: np.ndarray) -> np.ndarray:

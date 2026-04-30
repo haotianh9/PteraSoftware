@@ -1,0 +1,203 @@
+{
+  "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+  "gaps_m": [
+    0.5,
+    1.0,
+    2.0
+  ],
+  "prescribed_steps": 96,
+  "free_steps": 624,
+  "steps_per_flap": 24,
+  "flapping_period_s": 0.125,
+  "gap_results": [
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 0.5,
+      "body_2_initial_offset_E_m": [
+        0.0,
+        -0.5,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 24,
+      "prescribed_steps": 96,
+      "free_steps": 624,
+      "periods_total_requested": 30.0,
+      "periods_total_completed": 20.541666666666664,
+      "time_range_s": [
+        0.0,
+        2.567708333333333
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        192.37162893855742,
+        -68.81919656722302,
+        1.7355534411120106
+      ],
+      "body_1_final_position_E_m": [
+        200.42223973720988,
+        69.500114840135,
+        -68.01963273272972
+      ],
+      "body_0_final_velocity_E_mps": [
+        56113.510275406545,
+        -47261.606527804564,
+        22612.502080673952
+      ],
+      "body_1_final_velocity_E_mps": [
+        76456.26884909034,
+        25766.194311013584,
+        -22799.515197850465
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        2305.460607039476,
+        -1998.9659818088603,
+        954.365983040971
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        3152.0678481274767,
+        1103.0380966259283,
+        -939.4451908013616
+      ],
+      "max_interbody_velocity_delta_mps": 88369.33198257342,
+      "max_interbody_alpha_delta_deg": 49.279925982123885,
+      "max_interbody_euler_delta_deg": 219.27763299368297,
+      "max_interbody_offset_drift_m": 155.56799012647733,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_0p500m/body_0_velocity_history.png",
+        "body_1_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_0p500m/body_1_velocity_history.png",
+        "interbody_offset_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_0p500m/interbody_offset_history.png"
+      },
+      "trajectory_movie_mp4": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_0p500m/trajectory_render.mp4"
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 1.0,
+      "body_2_initial_offset_E_m": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 24,
+      "prescribed_steps": 96,
+      "free_steps": 624,
+      "periods_total_requested": 30.0,
+      "periods_total_completed": 25.875,
+      "time_range_s": [
+        0.0,
+        3.234375
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        24.121325443233225,
+        47.838340426838776,
+        -28.364498491212757
+      ],
+      "body_1_final_position_E_m": [
+        6.838772494103128,
+        30.241705182243688,
+        -1.7876336077995267
+      ],
+      "body_0_final_velocity_E_mps": [
+        4416.99140926846,
+        22529.454531859825,
+        -3710.502775501918
+      ],
+      "body_1_final_velocity_E_mps": [
+        525.0025342506824,
+        11814.33512482381,
+        -3195.5945018564375
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        179.99875893628575,
+        940.1068716437595,
+        -161.27168991049237
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        -5.172590841323526,
+        487.0863733560049,
+        -147.76231472340712
+      ],
+      "max_interbody_velocity_delta_mps": 11411.682252874487,
+      "max_interbody_alpha_delta_deg": 231.7926773060335,
+      "max_interbody_euler_delta_deg": 289.8847828404855,
+      "max_interbody_offset_drift_m": 35.78358121978325,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_1p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_1p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_1p000m/interbody_offset_history.png"
+      },
+      "trajectory_movie_mp4": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_1p000m/trajectory_render.mp4"
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 2.0,
+      "body_2_initial_offset_E_m": [
+        0.0,
+        -2.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 24,
+      "prescribed_steps": 96,
+      "free_steps": 624,
+      "periods_total_requested": 30.0,
+      "periods_total_completed": 30.0,
+      "time_range_s": [
+        0.0,
+        3.75
+      ],
+      "run_status": "ok",
+      "error_message": null,
+      "body_0_final_position_E_m": [
+        9.924087686670465,
+        -2.864958583652025,
+        3.794036106837884
+      ],
+      "body_1_final_position_E_m": [
+        10.450356382785072,
+        -3.0611395587765493,
+        5.331401450574437
+      ],
+      "body_0_final_velocity_E_mps": [
+        50.97304686782947,
+        -69.91472856991219,
+        -29.962264705521275
+      ],
+      "body_1_final_velocity_E_mps": [
+        10.522800819574154,
+        13.8290933481034,
+        -10.713082168393944
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        -9.266893344193734,
+        0.18552163267364166,
+        -4.734998476026125
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        8.488843438075968,
+        0.23283788963829485,
+        -10.932129047391923
+      ],
+      "max_interbody_velocity_delta_mps": 94.97252836030191,
+      "max_interbody_alpha_delta_deg": 202.216150689649,
+      "max_interbody_euler_delta_deg": 179.7807928026011,
+      "max_interbody_offset_drift_m": 2.6870132461368472,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_2p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_2p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_2p000m/interbody_offset_history.png"
+      },
+      "trajectory_movie_mp4": "/home/hht/birdflock/PteraSoftware/output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep/gap_2p000m/trajectory_render.mp4"
+    }
+  ]
+}

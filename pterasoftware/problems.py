@@ -612,7 +612,7 @@ class MultiBodyCoupledUnsteadyProblem:
     """An unsteady coupled free-flight problem for multiple rigid bodies.
 
     The current implementation is intentionally scoped to the first practical multibody
-    milestone: multiple static-geometry gliding wings coupled to MuJoCo.
+    milestone: multiple rigid bodies with shared atmosphere coupled to MuJoCo.
     """
 
     def __init__(

@@ -1,0 +1,410 @@
+{
+  "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+  "gaps_m": [
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0
+  ],
+  "gap_axis": "x",
+  "prescribed_steps": 48,
+  "free_steps": 552,
+  "steps_per_flap": 12,
+  "fixed_pitch_deg": 5.0,
+  "fixed_yaw_deg": 0.0,
+  "flapping_period_s": 0.125,
+  "gap_results": [
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 1.0,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 35.08333333333333,
+      "time_range_s": [
+        0.0,
+        4.385416666666666
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        -71.81464493789882,
+        -42.13842393318615,
+        31.192215293045017
+      ],
+      "body_1_final_position_E_m": [
+        14.80837551951829,
+        2.9388864738194878,
+        0.27261304345162846
+      ],
+      "body_0_final_velocity_E_mps": [
+        -16867.140592061263,
+        -9056.657543177065,
+        5543.008471775157
+      ],
+      "body_1_final_velocity_E_mps": [
+        9.68353248331404,
+        -13.280219260501925,
+        9.077204122669594
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        -1400.967480244309,
+        -764.3185606857829,
+        454.81514266672866
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        7.116316632864048,
+        -10.604863782636105,
+        0.1446190408829454
+      ],
+      "max_interbody_velocity_delta_mps": 19930.736595235012,
+      "max_interbody_alpha_delta_deg": 184.39117996886776,
+      "max_interbody_euler_delta_deg": 40.310259740195065,
+      "max_interbody_offset_drift_m": 103.27526049777623,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p000m/interbody_offset_history.png"
+      }
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 1.5,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -1.5,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 41.416666666666664,
+      "time_range_s": [
+        0.0,
+        5.177083333333333
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        16.368478428139543,
+        -3.8908937810320454,
+        1.7911371853813947
+      ],
+      "body_1_final_position_E_m": [
+        17.68121167363409,
+        -3.9662322023622902,
+        -0.5114027718107419
+      ],
+      "body_0_final_velocity_E_mps": [
+        -511.4602775359207,
+        179.03349253708612,
+        337.0112232581792
+      ],
+      "body_1_final_velocity_E_mps": [
+        -7.050222053274009,
+        -3.8719609464086013,
+        -8.120503170142893
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        -36.06482853661312,
+        22.687644866588215,
+        24.23925948478721
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        8.235134466271926,
+        9.962815242021678,
+        -0.5119946463040548
+      ],
+      "max_interbody_velocity_delta_mps": 637.9653733341675,
+      "max_interbody_alpha_delta_deg": 150.23067450172832,
+      "max_interbody_euler_delta_deg": 258.87625500518084,
+      "max_interbody_offset_drift_m": 3.6357715058162245,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p500m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p500m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_1p500m/interbody_offset_history.png"
+      }
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 2.0,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -2.0,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 36.08333333333333,
+      "time_range_s": [
+        0.0,
+        4.510416666666666
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        15.78714457420034,
+        0.6089855964531545,
+        0.0998465756236382
+      ],
+      "body_1_final_position_E_m": [
+        12.87290492202625,
+        -1.3709140536224078,
+        8.504518327246167
+      ],
+      "body_0_final_velocity_E_mps": [
+        4.045445566476031,
+        -3.2840029536163455,
+        0.02403911483506626
+      ],
+      "body_1_final_velocity_E_mps": [
+        -427.71934068477447,
+        -394.4256971299986,
+        1440.0719280518163
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        3.9601991110061423,
+        -2.4266515889707865,
+        -0.15631616931467168
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        -25.378281855990057,
+        -22.044689466242108,
+        114.10015638278617
+      ],
+      "max_interbody_velocity_delta_mps": 1553.431871052482,
+      "max_interbody_alpha_delta_deg": 137.28839466981438,
+      "max_interbody_euler_delta_deg": 158.3582229612859,
+      "max_interbody_offset_drift_m": 8.682991651412458,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p000m/interbody_offset_history.png"
+      }
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 2.5,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -2.5,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 40.75,
+      "time_range_s": [
+        0.0,
+        5.09375
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        18.53705917378067,
+        -4.796612714933935,
+        0.37240108982023157
+      ],
+      "body_1_final_position_E_m": [
+        15.479716113485264,
+        0.4315629780160582,
+        0.24408289078888648
+      ],
+      "body_0_final_velocity_E_mps": [
+        -82.76124096209553,
+        -104.54861294186401,
+        -111.0384215725624
+      ],
+      "body_1_final_velocity_E_mps": [
+        3.9419427325474152,
+        -0.6340468150667997,
+        -0.21428944932798477
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        1.8568653688296297,
+        5.114352151728018,
+        -6.52930399986204
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        3.8012763685260857,
+        -0.4854386143239811,
+        0.1033796640511576
+      ],
+      "max_interbody_velocity_delta_mps": 174.92188935915263,
+      "max_interbody_alpha_delta_deg": 123.97209486957183,
+      "max_interbody_euler_delta_deg": 174.49981655812738,
+      "max_interbody_offset_drift_m": 5.259364783261875,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p500m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p500m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_2p500m/interbody_offset_history.png"
+      }
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 3.0,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -3.0,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 33.166666666666664,
+      "time_range_s": [
+        0.0,
+        4.145833333333333
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        14.376482899976853,
+        -0.008718939779440616,
+        0.10047689634098463
+      ],
+      "body_1_final_position_E_m": [
+        13.830558197484235,
+        -2.8970327675514334,
+        0.3996346988988805
+      ],
+      "body_0_final_velocity_E_mps": [
+        3.771390576678333,
+        0.04613624360924741,
+        -0.01666678209066123
+      ],
+      "body_1_final_velocity_E_mps": [
+        316.0876337254781,
+        -184.94337930100423,
+        169.13609857650837
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        3.783224605042216,
+        0.035166181086579575,
+        -0.004792097769476333
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        32.741848254040775,
+        -3.4889690577283425,
+        3.0134186140154924
+      ],
+      "max_interbody_velocity_delta_mps": 400.46874362985216,
+      "max_interbody_alpha_delta_deg": 100.04366490193856,
+      "max_interbody_euler_delta_deg": 50.656728042802456,
+      "max_interbody_offset_drift_m": 4.168219196759344,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_3p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_3p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_3p000m/interbody_offset_history.png"
+      }
+    },
+    {
+      "case": "phase1_multibody_two_flapping_forward_inline_gap_sweep",
+      "inline_gap_m": 4.0,
+      "gap_axis": "x",
+      "body_2_initial_offset_E_m": [
+        -4.0,
+        0.0,
+        0.0
+      ],
+      "flapping_frequency_hz": 8.0,
+      "flapping_period_s": 0.125,
+      "steps_per_flap": 12,
+      "fixed_pitch_deg": 5.0,
+      "fixed_yaw_deg": 0.0,
+      "prescribed_steps": 48,
+      "free_steps": 552,
+      "periods_total_requested": 50.0,
+      "periods_total_completed": 26.583333333333332,
+      "time_range_s": [
+        0.0,
+        3.3229166666666665
+      ],
+      "run_status": "failed",
+      "error_message": "ValueError('vCg__E must be greater than 0.0.')",
+      "body_0_final_position_E_m": [
+        11.26246775325852,
+        0.00011140817062401764,
+        0.12595765554475472
+      ],
+      "body_1_final_position_E_m": [
+        8.46538735420862,
+        3.2160421157034618,
+        0.12691083563068614
+      ],
+      "body_0_final_velocity_E_mps": [
+        3.7877892793098935,
+        -0.0005962673823754481,
+        0.2988450607663987
+      ],
+      "body_1_final_velocity_E_mps": [
+        12.276715120098075,
+        -87.42248432702462,
+        -108.76270376717962
+      ],
+      "body_0_last_flap_mean_velocity_E_mps": [
+        3.777946002203143,
+        -0.0004521040600166994,
+        -0.0038617256312096135
+      ],
+      "body_1_last_flap_mean_velocity_E_mps": [
+        10.330143651276154,
+        -17.125236009832502,
+        -10.930004372630401
+      ],
+      "max_interbody_velocity_delta_mps": 140.0323884199419,
+      "max_interbody_alpha_delta_deg": 85.54170115096721,
+      "max_interbody_euler_delta_deg": 49.9758592116427,
+      "max_interbody_offset_drift_m": 4.057699458757736,
+      "passes_body_symmetry_check": false,
+      "diagnostic_plots": {
+        "body_0_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_4p000m/body_0_velocity_history.png",
+        "body_1_velocity_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_4p000m/body_1_velocity_history.png",
+        "interbody_offset_history": "output/free_flight_cases/phase1_multibody_validation/two_flapping_forward_inline_gap_sweep_true_inline_50periods_spf12/gap_4p000m/interbody_offset_history.png"
+      }
+    }
+  ]
+}

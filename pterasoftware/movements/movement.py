@@ -1057,10 +1057,6 @@ class MultiBodyCoupledMovement:
     This is the first multibody extension of the coupled free-flight data model. It
     keeps one AirplaneMovement per body, one CoupledOperatingPoint per body for the
     current step, and one generated Airplane per body per time step.
-
-    The current implementation intentionally targets the first practical multibody
-    milestone: multiple rigid gliding wings with static internal geometry. Therefore
-    every AirplaneMovement must currently be static.
     """
 
     def __init__(
@@ -1111,11 +1107,6 @@ class MultiBodyCoupledMovement:
                     "Every element in airplane_movements must be an "
                     "AirplaneMovement."
                 )
-            if airplane_movement.max_period != 0.0:
-                raise ValueError(
-                    "MultiBodyCoupledMovement currently supports only static "
-                    "AirplaneMovements."
-                )
             validated_airplane_movements.append(airplane_movement)
         self._airplane_movements = tuple(validated_airplane_movements)
 
@@ -1160,24 +1151,53 @@ class MultiBodyCoupledMovement:
         )
         self._num_steps = self._prescribed_num_steps + self._free_num_steps
 
-        airplanes_by_body = []
+        airplanes_by_body: list[tuple[geometry.airplane.Airplane, ...]] = []
         for airplane_movement in self._airplane_movements:
-            static_airplane = tuple(
-                airplane_movement.generate_airplanes(
-                    num_steps=1,
-                    delta_time=self._delta_time,
+            if airplane_movement.max_period == 0.0:
+                static_airplane = tuple(
+                    airplane_movement.generate_airplanes(
+                        num_steps=1,
+                        delta_time=self._delta_time,
+                    )
+                )[0]
+                body_airplanes = tuple(static_airplane for _ in range(self._num_steps))
+            else:
+                body_airplanes = tuple(
+                    airplane_movement.generate_airplanes(
+                        num_steps=self._num_steps,
+                        delta_time=self._delta_time,
+                    )
                 )
-            )[0]
-            airplanes_by_body.append(
-                tuple(static_airplane for _ in range(self._num_steps))
-            )
+            airplanes_by_body.append(body_airplanes)
         self._airplanes: tuple[tuple[geometry.airplane.Airplane, ...], ...] = tuple(
             tuple(body_airplanes[step] for body_airplanes in airplanes_by_body)
             for step in range(self._num_steps)
         )
 
-        self._static = True
-        self._max_period = 0.0
+        self._static = all(
+            airplane_movement.max_period == 0.0
+            for airplane_movement in self._airplane_movements
+        )
+        self._max_period = max(
+            airplane_movement.max_period
+            for airplane_movement in self._airplane_movements
+        )
+
+        # Validate each body's symmetry type consistency across time.
+        for body_index, body_airplanes in enumerate(airplanes_by_body):
+            base_wing_symmetry_types = [
+                wing.symmetry_type for wing in body_airplanes[0].wings
+            ]
+            for step_id, airplane in enumerate(body_airplanes):
+                for wing_id, wing in enumerate(airplane.wings):
+                    base_symmetry_type = base_wing_symmetry_types[wing_id]
+                    if wing.symmetry_type != base_symmetry_type:
+                        raise ValueError(
+                            f"Body {body_index} wing {wing_id} changed from type "
+                            f"{base_symmetry_type} symmetry at time step 0 to type "
+                            f"{wing.symmetry_type} symmetry at time step {step_id}. "
+                            "Wings cannot undergo motion that changes their symmetry type."
+                        )
 
     @property
     def airplane_movements(self) -> tuple[airplane_movement_mod.AirplaneMovement, ...]:
