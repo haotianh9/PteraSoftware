@@ -54,6 +54,14 @@ class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
             sweep_case.DEFAULT_ANGLE_OF_ATTACK_DEG,
         )
 
+    def test_streamwise_speed_is_normalized(self) -> None:
+        """The fixed-formation theory case should use U=1 m/s."""
+        self.assertEqual(
+            self.summary["prescribed_streamwise_speed_mps"],
+            sweep_case.DEFAULT_STREAMWISE_SPEED_MPS,
+        )
+        self.assertEqual(sweep_case.DEFAULT_STREAMWISE_SPEED_MPS, 1.0)
+
     def test_constrained_coordinates_remain_clamped(self) -> None:
         """X/Y/Z and attitude should remain fixed under the formation clamp."""
         self.assertLess(self.summary["max_xyz_drift_m"], 1e-10)

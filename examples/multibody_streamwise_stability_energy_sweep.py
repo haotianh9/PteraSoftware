@@ -26,11 +26,9 @@ from pterasoftware import _aerodynamics_functions, _transformations
 try:
     from examples import free_flight_case_utils as ff_utils
     from examples import free_flight_gliding_wing as glide_case
-    from examples import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 except ImportError:
     import free_flight_case_utils as ff_utils
     import free_flight_gliding_wing as glide_case
-    import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 
 
 DEFAULT_OUTPUT_ROOT = (
@@ -43,8 +41,9 @@ DEFAULT_OUTPUT_ROOT = (
 AIRCRAFT_MODEL_FIXED_WING = "fixed_wing"
 DEFAULT_AIRCRAFT_MODEL = AIRCRAFT_MODEL_FIXED_WING
 
-REFERENCE_TIME_S = glide_case.REFERENCE_PERIOD_S
+REFERENCE_TIME_S = 0.125
 DEFAULT_ANGLE_OF_ATTACK_DEG = glide_case.DEFAULT_INITIAL_ALPHA_DEG
+DEFAULT_STREAMWISE_SPEED_MPS = 1.0
 FULL_SPAN_M = 1.0
 SEMI_SPAN_M = FULL_SPAN_M / 2.0
 ROOT_CHORD_M = 0.1
@@ -64,7 +63,7 @@ DEFAULT_PRODUCTION_Z_OVER_SPAN = (-0.5, -0.25, 0.0, 0.25, 0.5)
 DEFAULT_PRESCRIBED_REFERENCE_TIMES = 4.0
 DEFAULT_SMOKE_TOTAL_REFERENCE_TIMES = 20.0
 DEFAULT_PRODUCTION_TOTAL_REFERENCE_TIMES = 50.0
-DEFAULT_STEPS_PER_REFERENCE_TIME = glide_case.DEFAULT_STEPS_PER_REFERENCE_PERIOD
+DEFAULT_STEPS_PER_REFERENCE_TIME = 24
 DEFAULT_TIME_STEP_S = REFERENCE_TIME_S / DEFAULT_STEPS_PER_REFERENCE_TIME
 
 
@@ -170,7 +169,7 @@ class StreamwiseClampDiagnostics:
     mujoco_model: object
     target_positions_E_m: np.ndarray
     target_angles_deg: np.ndarray
-    prescribed_streamwise_speed_mps: float = glide_case.DEFAULT_INITIAL_SPEED_MPS
+    prescribed_streamwise_speed_mps: float = DEFAULT_STREAMWISE_SPEED_MPS
     span_m: float = FULL_SPAN_M
     max_abs_x_over_span: float = 20.0
     max_abs_speed_mps: float = 50.0
@@ -363,7 +362,7 @@ def install_fixed_formation_projection(
         mujoco_model=coupled_problem.mujoco_model,
         target_positions_E_m=np.vstack(target_positions_E_m),
         target_angles_deg=np.array(target_angles_deg, dtype=float),
-        prescribed_streamwise_speed_mps=glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        prescribed_streamwise_speed_mps=DEFAULT_STREAMWISE_SPEED_MPS,
         span_m=FULL_SPAN_M,
         max_abs_x_over_span=max_abs_x_over_span,
         max_abs_speed_mps=max_abs_speed_mps,
@@ -486,7 +485,7 @@ def build_problem(
 
     operating_point_kwargs = dict(
         rho=glide_case.AIR_DENSITY,
-        vCg__E=glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        vCg__E=DEFAULT_STREAMWISE_SPEED_MPS,
         alpha=angle_of_attack_deg,
         beta=0.0,
         angles_E_to_BP1_izyx=(
@@ -542,8 +541,34 @@ def build_problem(
 def get_history_arrays(
     coupled_problem: ps.problems.MultiBodyCoupledUnsteadyProblem,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Reuse the existing multibody history extractor."""
-    return inline_case.get_multibody_history_arrays(coupled_problem)
+    """Extract time, position, velocity, alpha, and Euler-angle histories."""
+    coupled_operating_points_by_step = (
+        coupled_problem.coupled_movement.coupled_operating_points
+    )
+    positions_by_step = coupled_problem.coupled_movement.positions_E_E
+    num_steps = len(coupled_operating_points_by_step)
+    num_bodies = len(coupled_operating_points_by_step[0])
+
+    times_s = np.arange(num_steps, dtype=float) * coupled_problem.delta_time
+    positions_E_E = np.zeros((num_steps, num_bodies, 3), dtype=float)
+    velocities_E__E = np.zeros((num_steps, num_bodies, 3), dtype=float)
+    alphas_deg = np.zeros((num_steps, num_bodies), dtype=float)
+    euler_angles_deg = np.zeros((num_steps, num_bodies, 3), dtype=float)
+
+    for step_index, (coupled_operating_points, positions_step) in enumerate(
+        zip(coupled_operating_points_by_step, positions_by_step, strict=True)
+    ):
+        for body_index, (coupled_operating_point, position_E_E) in enumerate(
+            zip(coupled_operating_points, positions_step, strict=True)
+        ):
+            positions_E_E[step_index, body_index] = position_E_E
+            velocities_E__E[step_index, body_index] = coupled_operating_point.vCg_E__E
+            alphas_deg[step_index, body_index] = coupled_operating_point.alpha
+            euler_angles_deg[step_index, body_index] = (
+                coupled_operating_point.angles_E_to_BP1_izyx
+            )
+
+    return times_s, positions_E_E, velocities_E__E, alphas_deg, euler_angles_deg
 
 
 def aerodynamic_forces_E_history(
@@ -827,7 +852,7 @@ def compute_run_metrics(
         aero_forces_sample_E,
         final_average_num_steps,
     )
-    reference_speed_mps = glide_case.DEFAULT_INITIAL_SPEED_MPS
+    reference_speed_mps = DEFAULT_STREAMWISE_SPEED_MPS
     final_window_required_streamwise_power_W = (
         final_window_required_thrust_E_N * reference_speed_mps
     )
@@ -865,7 +890,7 @@ def compute_run_metrics(
         "fixed_pitch_deg": angle_of_attack_deg,
         "fixed_pitch_matches_angle_of_attack": True,
         "fixed_yaw_deg": 0.0,
-        "prescribed_streamwise_speed_mps": glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        "prescribed_streamwise_speed_mps": DEFAULT_STREAMWISE_SPEED_MPS,
         "reference_time_s": REFERENCE_TIME_S,
         "time_step_s": time_step_s,
         "final_average_window_s": final_average_num_steps * time_step_s,
@@ -1084,7 +1109,7 @@ def save_power_plot(
     n = min(len(times_s), len(aero_forces_E), len(raw_forces_E))
     x_axis_s = times_s[:n]
     required_thrust_N = -raw_forces_E[:n, :, 0]
-    required_power_W = required_thrust_N * glide_case.DEFAULT_INITIAL_SPEED_MPS
+    required_power_W = required_thrust_N * DEFAULT_STREAMWISE_SPEED_MPS
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     for body_index in range(2):
@@ -1279,7 +1304,7 @@ def make_initial_collision_skipped_summary(
         "fixed_pitch_deg": angle_of_attack_deg,
         "fixed_pitch_matches_angle_of_attack": True,
         "fixed_yaw_deg": 0.0,
-        "prescribed_streamwise_speed_mps": glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        "prescribed_streamwise_speed_mps": DEFAULT_STREAMWISE_SPEED_MPS,
         "reference_time_s": REFERENCE_TIME_S,
         "time_step_s": time_step_s,
         "final_average_window_s": final_average_num_steps * time_step_s,
@@ -1473,22 +1498,9 @@ def run_streamwise_case(
         clamp_arrays=clamp_arrays,
     )
 
-    if render_wake_movie and history_stride == 1 and len(times_s) >= 2:
-        try:
-            movie_path = inline_case.save_standard_wake_movie(
-                coupled_solver=coupled_solver,
-                output_dir=output_dir,
-                filename_stem="AnimateFreeFlight_streamwise_standard_wake",
-                follow_body_index=0,
-                show_wake_vortices=True,
-            )
-            summary["standard_wake_movie_mp4"] = str(movie_path)
-        except Exception as exc:
-            summary["standard_wake_movie_error"] = repr(exc)
-            print(f"Standard wake render failed for {output_dir}: {exc!r}")
-    elif render_wake_movie:
+    if render_wake_movie:
         summary["standard_wake_movie_skipped"] = (
-            "standard wake movies require history_stride=1 and at least 2 time samples"
+            "fixed-formation trim sweep currently writes diagnostics only"
         )
 
     ff_utils.write_json(output_dir / "summary.json", summary)
