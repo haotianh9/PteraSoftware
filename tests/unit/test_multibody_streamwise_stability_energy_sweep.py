@@ -37,6 +37,8 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
         self.assertAlmostEqual(sweep_case.ROOT_CHORD_M, 0.1)
         self.assertAlmostEqual(sweep_case.TIP_CHORD_M, 0.1)
         self.assertAlmostEqual(sweep_case.ASPECT_RATIO, 10.0)
+        self.assertEqual(sweep_case.NUM_CHORDWISE_PANELS, 2)
+        self.assertEqual(sweep_case.NUM_SPANWISE_PANELS_PER_HALF, 3)
 
         airplane = sweep_case.build_rectangular_fixed_wing_airplane()
         self.assertAlmostEqual(float(airplane.s_ref), 0.1)
