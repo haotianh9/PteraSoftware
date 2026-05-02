@@ -36,7 +36,7 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
     if baseline_power_W is not None:
         baseline_power_W = np.asarray(baseline_power_W, dtype=float)
 
-    return sweep.run_streamwise_case(
+    summary = sweep.run_streamwise_case(
         output_dir=Path(payload["output_dir"]),
         x_over_span=float(payload["x_over_span"]),
         y_over_span=float(payload["y_over_span"]),
@@ -57,6 +57,36 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
         max_abs_x_over_span=float(payload["max_abs_x_over_span"]),
         max_abs_speed_mps=float(payload["max_abs_speed_mps"]),
     )
+    summary["_parallel_output_dir"] = payload["output_dir"]
+    summary["_parallel_is_baseline"] = bool(payload.get("is_baseline", False))
+    return summary
+
+
+def _add_baseline_deltas(
+    summary: dict[str, Any],
+    baseline_power_W: np.ndarray,
+) -> dict[str, Any]:
+    """Add baseline-relative fixed-formation power metrics to a summary."""
+    if summary["run_status"] != "ok":
+        return summary
+
+    required_power_W = np.asarray(
+        summary["final_window_mean_required_streamwise_power_W"],
+        dtype=float,
+    )
+    delta_power_W = required_power_W - baseline_power_W
+    summary["baseline_final_window_mean_required_power_W"] = baseline_power_W.tolist()
+    summary["final_window_delta_power_vs_baseline_W"] = delta_power_W.tolist()
+    summary["final_window_pair_mean_delta_power_vs_baseline_W"] = float(
+        np.mean(delta_power_W)
+    )
+
+    output_dir = Path(summary["_parallel_output_dir"])
+    json_summary = dict(summary)
+    json_summary.pop("_parallel_output_dir", None)
+    json_summary.pop("_parallel_is_baseline", None)
+    ff_utils.write_json(output_dir / "summary.json", json_summary)
+    return summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,35 +143,29 @@ def main() -> None:
         1, int(round(args.final_average_window_s / args.time_step_s))
     )
 
-    baseline_summary: dict[str, Any] | None = None
-    baseline_power_W: list[float] | None = None
-    if args.run_baseline:
-        baseline_summary = sweep.run_streamwise_case(
-            output_dir=output_root / "baseline_far_lateral",
-            x_over_span=0.0,
-            y_over_span=args.baseline_y_over_span,
-            z_over_span=0.0,
-            prescribed_num_steps=prescribed_num_steps,
-            free_num_steps=free_num_steps,
-            time_step_s=args.time_step_s,
-            final_average_num_steps=final_average_num_steps,
-            show_progress=False,
-            history_stride=args.history_stride,
-            save_every_n_steps=args.save_every_n_steps,
-            history_save_dir=None,
-            render_wake_movie=False,
-            baseline_power_W=None,
-            compute_wbar=args.compute_wbar,
-            aircraft_model=sweep.DEFAULT_AIRCRAFT_MODEL,
-            angle_of_attack_deg=args.angle_of_attack_deg,
-            max_abs_x_over_span=args.max_abs_x_over_span,
-            max_abs_speed_mps=args.max_abs_speed_mps,
-        )
-        baseline_power_W = baseline_summary[
-            "final_window_mean_required_streamwise_power_W"
-        ]
-
     payloads: list[dict[str, Any]] = []
+    if args.run_baseline:
+        payloads.append(
+            {
+                "output_dir": str(output_root / "baseline_far_lateral"),
+                "x_over_span": 0.0,
+                "y_over_span": args.baseline_y_over_span,
+                "z_over_span": 0.0,
+                "prescribed_num_steps": prescribed_num_steps,
+                "free_num_steps": free_num_steps,
+                "time_step_s": args.time_step_s,
+                "final_average_num_steps": final_average_num_steps,
+                "history_stride": args.history_stride,
+                "save_every_n_steps": args.save_every_n_steps,
+                "compute_wbar": args.compute_wbar,
+                "aircraft_model": sweep.DEFAULT_AIRCRAFT_MODEL,
+                "angle_of_attack_deg": args.angle_of_attack_deg,
+                "max_abs_x_over_span": args.max_abs_x_over_span,
+                "max_abs_speed_mps": args.max_abs_speed_mps,
+                "baseline_power_W": None,
+                "is_baseline": True,
+            }
+        )
     for z_over_span, y_over_span, x_over_span in product(z_values, y_values, x_values):
         payloads.append(
             {
@@ -162,16 +186,20 @@ def main() -> None:
                 "angle_of_attack_deg": args.angle_of_attack_deg,
                 "max_abs_x_over_span": args.max_abs_x_over_span,
                 "max_abs_speed_mps": args.max_abs_speed_mps,
-                "baseline_power_W": baseline_power_W,
+                "baseline_power_W": None,
+                "is_baseline": False,
             }
         )
 
+    all_summaries: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
     with mp.Pool(processes=args.workers, maxtasksperchild=1) as pool:
         for index, summary in enumerate(
             pool.imap_unordered(_run_case, payloads), start=1
         ):
-            summaries.append(summary)
+            all_summaries.append(summary)
+            if not summary["_parallel_is_baseline"]:
+                summaries.append(summary)
             print(
                 f"[{index}/{len(payloads)}] "
                 f"X/B={summary['x_over_span_initial']:.3g}, "
@@ -180,6 +208,19 @@ def main() -> None:
                 f"{summary['run_status']}",
                 flush=True,
             )
+
+    baseline_summary = next(
+        (summary for summary in all_summaries if summary["_parallel_is_baseline"]),
+        None,
+    )
+    if baseline_summary is not None:
+        baseline_power_W = np.asarray(
+            baseline_summary["final_window_mean_required_streamwise_power_W"],
+            dtype=float,
+        )
+        summaries = [
+            _add_baseline_deltas(summary, baseline_power_W) for summary in summaries
+        ]
 
     summaries.sort(
         key=lambda summary: (
@@ -212,7 +253,15 @@ def main() -> None:
         "time_step_s": args.time_step_s,
         "final_average_window_s": args.final_average_window_s,
         "workers": args.workers,
-        "baseline_summary": baseline_summary,
+        "baseline_summary": (
+            None
+            if baseline_summary is None
+            else {
+                key: value
+                for key, value in baseline_summary.items()
+                if not key.startswith("_parallel_")
+            }
+        ),
         "num_cases": len(summaries),
         "num_ok_cases": sum(summary["run_status"] == "ok" for summary in summaries),
         "num_skipped_initial_collision_cases": sum(
@@ -224,7 +273,14 @@ def main() -> None:
         "theory_validation_9panel": (
             None if theory_panel_path is None else str(theory_panel_path)
         ),
-        "case_summaries": summaries,
+        "case_summaries": [
+            {
+                key: value
+                for key, value in summary.items()
+                if not key.startswith("_parallel_")
+            }
+            for summary in summaries
+        ],
     }
     ff_utils.write_json(output_root / "sweep_summary.json", sweep_summary)
 
