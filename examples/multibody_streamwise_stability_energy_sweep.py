@@ -27,10 +27,12 @@ from pterasoftware import _aerodynamics_functions, _transformations
 try:
     from examples import free_flight_case_utils as ff_utils
     from examples import free_flight_flapping_forward as flap_case
+    from examples import free_flight_gliding_wing as glide_case
     from examples import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 except ImportError:
     import free_flight_case_utils as ff_utils
     import free_flight_flapping_forward as flap_case
+    import free_flight_gliding_wing as glide_case
     import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 
 
@@ -41,8 +43,22 @@ DEFAULT_OUTPUT_ROOT = (
     / "streamwise_stability_energy"
 )
 
-FULL_SPAN_M = 2.0 * (flap_case.WING_ROOT_Y_M + flap_case.SEMI_SPAN_M)
-REFERENCE_C_REF_M = float(flap_case.build_airplane().c_ref)
+AIRCRAFT_MODEL_FIXED_WING = "fixed_wing"
+AIRCRAFT_MODEL_FLAPPING = "flapping"
+DEFAULT_AIRCRAFT_MODEL = AIRCRAFT_MODEL_FIXED_WING
+
+REFERENCE_PERIOD_S = glide_case.REFERENCE_PERIOD_S
+DEFAULT_ANGLE_OF_ATTACK_DEG = glide_case.DEFAULT_INITIAL_ALPHA_DEG
+FULL_SPAN_M = 1.0
+SEMI_SPAN_M = FULL_SPAN_M / 2.0
+ROOT_CHORD_M = 0.1
+TIP_CHORD_M = 0.1
+REFERENCE_C_REF_M = ROOT_CHORD_M
+REFERENCE_AREA_M2 = FULL_SPAN_M * REFERENCE_C_REF_M
+ASPECT_RATIO = FULL_SPAN_M**2 / REFERENCE_AREA_M2
+NUM_CHORDWISE_PANELS = 4
+NUM_SPANWISE_PANELS_PER_HALF = 6
+INITIAL_COLLISION_VERTICAL_CLEARANCE_M = 1.0e-6
 DEFAULT_SMOKE_X_OVER_SPAN = (0.0, 1.0, 2.0)
 DEFAULT_SMOKE_Y_OVER_SPAN = (0.5, 1.0)
 DEFAULT_SMOKE_Z_OVER_SPAN = (0.0, 0.25)
@@ -52,7 +68,7 @@ DEFAULT_PRODUCTION_Z_OVER_SPAN = (-0.5, -0.25, 0.0, 0.25, 0.5)
 DEFAULT_PRESCRIBED_PERIODS = 4.0
 DEFAULT_SMOKE_TOTAL_PERIODS = 20.0
 DEFAULT_PRODUCTION_TOTAL_PERIODS = 50.0
-DEFAULT_STEPS_PER_FLAP = 24
+DEFAULT_STEPS_PER_REFERENCE_PERIOD = glide_case.DEFAULT_STEPS_PER_REFERENCE_PERIOD
 
 
 def parse_float_tuple(values_text: str) -> tuple[float, ...]:
@@ -101,6 +117,43 @@ def body_positions_from_paper_offsets(
     return body_1_position_E_m, body_2_position_E_m
 
 
+def initial_planforms_overlap(
+    x_over_span: float,
+    y_over_span: float,
+    z_over_span: float,
+    span_m: float = FULL_SPAN_M,
+    chord_m: float = REFERENCE_C_REF_M,
+    vertical_clearance_m: float = INITIAL_COLLISION_VERTICAL_CLEARANCE_M,
+) -> bool:
+    """Return whether the initial rectangular wing planforms physically overlap."""
+    x_separation_m = abs(float(x_over_span) * span_m)
+    y_separation_m = abs(float(y_over_span) * span_m)
+    z_separation_m = abs(float(z_over_span) * span_m)
+    streamwise_overlap = x_separation_m < chord_m
+    spanwise_overlap = y_separation_m < span_m
+    vertically_coincident = z_separation_m < vertical_clearance_m
+    return streamwise_overlap and spanwise_overlap and vertically_coincident
+
+
+def initial_condition_is_collision_free(
+    x_over_span: float,
+    y_over_span: float,
+    z_over_span: float,
+    span_m: float = FULL_SPAN_M,
+    chord_m: float = REFERENCE_C_REF_M,
+    vertical_clearance_m: float = INITIAL_COLLISION_VERTICAL_CLEARANCE_M,
+) -> bool:
+    """Return whether a two-wing initial condition is safe to launch."""
+    return not initial_planforms_overlap(
+        x_over_span=x_over_span,
+        y_over_span=y_over_span,
+        z_over_span=z_over_span,
+        span_m=span_m,
+        chord_m=chord_m,
+        vertical_clearance_m=vertical_clearance_m,
+    )
+
+
 def _quat_from_izyx_angles_deg(angles_deg: np.ndarray) -> np.ndarray:
     """Return a MuJoCo-compatible wxyz quaternion for intrinsic z-y-x angles."""
     clamped_T_pas_E_to_BP = _transformations.generate_rot_T(
@@ -120,6 +173,9 @@ class StreamwiseClampDiagnostics:
     mujoco_model: object
     target_positions_E_m: np.ndarray
     target_angles_deg: np.ndarray
+    span_m: float = FULL_SPAN_M
+    max_abs_x_over_span: float = 20.0
+    max_abs_speed_mps: float = 50.0
 
     def __post_init__(self) -> None:
         self.target_positions_E_m = np.asarray(
@@ -133,6 +189,12 @@ class StreamwiseClampDiagnostics:
             )
         if self.target_angles_deg.shape != (3,):
             raise ValueError("target_angles_deg must have shape (3,).")
+        if self.span_m <= 0.0:
+            raise ValueError("span_m must be positive.")
+        if self.max_abs_x_over_span <= 0.0:
+            raise ValueError("max_abs_x_over_span must be positive.")
+        if self.max_abs_speed_mps <= 0.0:
+            raise ValueError("max_abs_speed_mps must be positive.")
 
         self.raw_forces_E: list[np.ndarray] = []
         self.raw_moments_E_Cg: list[np.ndarray] = []
@@ -199,6 +261,32 @@ class StreamwiseClampDiagnostics:
         if record:
             self.preclamp_yz_velocities_E.append(yz_velocities_E)
             self.preclamp_angular_rates_rad_s.append(angular_rates_rad_s)
+            self.raise_if_diverged()
+
+    def raise_if_diverged(self) -> None:
+        """Stop a case early if x-only dynamics has clearly diverged."""
+        positions_x_m = np.zeros(self.mujoco_model.num_bodies, dtype=float)
+        speeds_x_mps = np.zeros(self.mujoco_model.num_bodies, dtype=float)
+        for body_index, qpos_adr in enumerate(self.mujoco_model.body_qposadrs):
+            qvel_adr = int(self.mujoco_model.body_qveladrs[body_index])
+            positions_x_m[body_index] = self.mujoco_model.data.qpos[qpos_adr]
+            speeds_x_mps[body_index] = self.mujoco_model.data.qvel[qvel_adr]
+
+        relative_x_over_span = (positions_x_m[1] - positions_x_m[0]) / self.span_m
+        if not np.all(np.isfinite(speeds_x_mps)) or not np.isfinite(
+            relative_x_over_span
+        ):
+            raise RuntimeError("Streamwise-only case diverged with non-finite state.")
+        if np.max(np.abs(speeds_x_mps)) > self.max_abs_speed_mps:
+            raise RuntimeError(
+                "Streamwise-only case exceeded speed guard: "
+                f"max |Ux|={np.max(np.abs(speeds_x_mps)):.3g} m/s."
+            )
+        if abs(relative_x_over_span) > self.max_abs_x_over_span:
+            raise RuntimeError(
+                "Streamwise-only case exceeded spacing guard: "
+                f"|X/B|={abs(relative_x_over_span):.3g}."
+            )
 
     def history_arrays(self) -> dict[str, np.ndarray]:
         """Return recorded clamp/load histories as arrays."""
@@ -269,12 +357,17 @@ def install_streamwise_only_projection(
     coupled_problem: ps.problems.MultiBodyCoupledUnsteadyProblem,
     target_positions_E_m: tuple[np.ndarray, np.ndarray],
     target_angles_deg: tuple[float, float, float],
+    max_abs_x_over_span: float = 20.0,
+    max_abs_speed_mps: float = 50.0,
 ) -> StreamwiseClampDiagnostics:
     """Install streamwise-only dynamics and return its diagnostics recorder."""
     diagnostics = StreamwiseClampDiagnostics(
         mujoco_model=coupled_problem.mujoco_model,
         target_positions_E_m=np.vstack(target_positions_E_m),
         target_angles_deg=np.array(target_angles_deg, dtype=float),
+        span_m=FULL_SPAN_M,
+        max_abs_x_over_span=max_abs_x_over_span,
+        max_abs_speed_mps=max_abs_speed_mps,
     )
     diagnostics.install()
     return diagnostics
@@ -293,6 +386,124 @@ def multibody_rigid_body_drag_model(
     )
 
 
+def build_rectangular_fixed_wing_airplane(
+    name: str = "Rectangular Fixed Wing",
+) -> ps.geometry.airplane.Airplane:
+    """Build the clean rectangular fixed wing used for theory validation."""
+    wing = ps.geometry.wing.Wing(
+        wing_cross_sections=[
+            ps.geometry.wing_cross_section.WingCrossSection(
+                airfoil=ps.geometry.airfoil.Airfoil(name="naca0012"),
+                chord=TIP_CHORD_M,
+                num_spanwise_panels=NUM_SPANWISE_PANELS_PER_HALF,
+                spanwise_spacing="uniform",
+            ),
+            ps.geometry.wing_cross_section.WingCrossSection(
+                airfoil=ps.geometry.airfoil.Airfoil(name="naca0012"),
+                chord=ROOT_CHORD_M,
+                Lp_Wcsp_Lpp=(0.0, SEMI_SPAN_M, 0.0),
+                num_spanwise_panels=NUM_SPANWISE_PANELS_PER_HALF,
+                spanwise_spacing="uniform",
+            ),
+            ps.geometry.wing_cross_section.WingCrossSection(
+                airfoil=ps.geometry.airfoil.Airfoil(name="naca0012"),
+                chord=TIP_CHORD_M,
+                Lp_Wcsp_Lpp=(0.0, SEMI_SPAN_M, 0.0),
+                num_spanwise_panels=None,
+            ),
+        ],
+        name=f"{name} Wing",
+        Ler_Gs_Cgs=(0.0, -SEMI_SPAN_M, 0.0),
+        angles_Gs_to_Wn_ixyz=(0.0, 0.0, 0.0),
+        symmetric=False,
+        mirror_only=False,
+        symmetryNormal_G=None,
+        symmetryPoint_G_Cg=None,
+        num_chordwise_panels=NUM_CHORDWISE_PANELS,
+        chordwise_spacing="uniform",
+    )
+    return ps.geometry.airplane.Airplane(
+        wings=[wing],
+        name=name,
+        weight=glide_case.TOTAL_AIRCRAFT_WEIGHT_N,
+    )
+
+
+def build_fixed_wing_airplanes_and_movements() -> tuple[
+    ps.geometry.airplane.Airplane,
+    ps.geometry.airplane.Airplane,
+    ps.movements.airplane_movement.AirplaneMovement,
+    ps.movements.airplane_movement.AirplaneMovement,
+]:
+    """Build two identical static fixed-wing aircraft and movements."""
+    airplane_1 = build_rectangular_fixed_wing_airplane(name="Rectangular Fixed Wing 1")
+    airplane_2 = build_rectangular_fixed_wing_airplane(name="Rectangular Fixed Wing 2")
+    airplane_movement_1 = glide_case.build_airplane_movement(airplane_1)
+    airplane_movement_2 = glide_case.build_airplane_movement(airplane_2)
+    return airplane_1, airplane_2, airplane_movement_1, airplane_movement_2
+
+
+def build_flapping_airplanes_and_movements() -> tuple[
+    ps.geometry.airplane.Airplane,
+    ps.geometry.airplane.Airplane,
+    ps.movements.airplane_movement.AirplaneMovement,
+    ps.movements.airplane_movement.AirplaneMovement,
+]:
+    """Build two identical flapping aircraft and movements."""
+    airplane_1 = flap_case.build_airplane()
+    airplane_2 = flap_case.build_airplane()
+    airplane_movement_1 = flap_case.build_airplane_movement(airplane_1)
+    airplane_movement_2 = flap_case.build_airplane_movement(airplane_2)
+    return airplane_1, airplane_2, airplane_movement_1, airplane_movement_2
+
+
+def get_aircraft_setup(
+    aircraft_model: str,
+) -> tuple[
+    ps.geometry.airplane.Airplane,
+    ps.geometry.airplane.Airplane,
+    ps.movements.airplane_movement.AirplaneMovement,
+    ps.movements.airplane_movement.AirplaneMovement,
+    np.ndarray,
+    Any,
+]:
+    """Return geometry, prescribed motion, inertia, and extra loads for a model."""
+    if aircraft_model == AIRCRAFT_MODEL_FIXED_WING:
+        (
+            airplane_1,
+            airplane_2,
+            airplane_movement_1,
+            airplane_movement_2,
+        ) = build_fixed_wing_airplanes_and_movements()
+        return (
+            airplane_1,
+            airplane_2,
+            airplane_movement_1,
+            airplane_movement_2,
+            glide_case.INERTIA_BP1_CGP1,
+            None,
+        )
+    if aircraft_model == AIRCRAFT_MODEL_FLAPPING:
+        (
+            airplane_1,
+            airplane_2,
+            airplane_movement_1,
+            airplane_movement_2,
+        ) = build_flapping_airplanes_and_movements()
+        return (
+            airplane_1,
+            airplane_2,
+            airplane_movement_1,
+            airplane_movement_2,
+            flap_case.INERTIA_BP1_CGP1,
+            multibody_rigid_body_drag_model,
+        )
+    raise ValueError(
+        f'aircraft_model must be "{AIRCRAFT_MODEL_FIXED_WING}" or '
+        f'"{AIRCRAFT_MODEL_FLAPPING}".'
+    )
+
+
 def build_problem(
     x_over_span: float,
     y_over_span: float,
@@ -300,32 +511,39 @@ def build_problem(
     prescribed_num_steps: int,
     free_num_steps: int,
     steps_per_flap: int,
+    aircraft_model: str = DEFAULT_AIRCRAFT_MODEL,
+    angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
+    max_abs_x_over_span: float = 20.0,
+    max_abs_speed_mps: float = 50.0,
 ) -> tuple[
     ps.problems.MultiBodyCoupledUnsteadyProblem,
     ps.multibody_coupled_unsteady_ring_vortex_lattice_method.MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver,
     StreamwiseClampDiagnostics,
 ]:
-    """Build one two-body streamwise-only flapping formation problem."""
-    delta_time = flap_case.FLAPPING_PERIOD_S / steps_per_flap
-
-    airplane_1 = flap_case.build_airplane()
-    airplane_2 = flap_case.build_airplane()
-    airplane_movement_1 = flap_case.build_airplane_movement(airplane_1)
-    airplane_movement_2 = flap_case.build_airplane_movement(airplane_2)
+    """Build one two-body streamwise-only fixed-wing or flapping formation problem."""
+    delta_time = REFERENCE_PERIOD_S / steps_per_flap
+    (
+        airplane_1,
+        airplane_2,
+        airplane_movement_1,
+        airplane_movement_2,
+        inertia_BP1_CgP1,
+        external_forces_fn,
+    ) = get_aircraft_setup(aircraft_model)
 
     operating_point_kwargs = dict(
-        rho=flap_case.AIR_DENSITY,
-        vCg__E=flap_case.INITIAL_SPEED_MPS,
-        alpha=flap_case.INITIAL_ALPHA_DEG,
+        rho=glide_case.AIR_DENSITY,
+        vCg__E=glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        alpha=angle_of_attack_deg,
         beta=0.0,
         angles_E_to_BP1_izyx=(
             0.0,
-            flap_case.FIXED_PITCH_DEG,
+            angle_of_attack_deg,
             0.0,
         ),
         externalFX_W=0.0,
-        nu=flap_case.KINEMATIC_VISCOSITY,
-        g_E=flap_case.GRAVITY_E,
+        nu=glide_case.KINEMATIC_VISCOSITY,
+        g_E=glide_case.GRAVITY_E,
     )
     coupled_operating_point_1 = ps.operating_point.CoupledOperatingPoint(
         **operating_point_kwargs
@@ -352,8 +570,8 @@ def build_problem(
     )
     coupled_problem = ps.problems.MultiBodyCoupledUnsteadyProblem(
         coupled_movement=coupled_movement,
-        I_BP1_CgP1s=[flap_case.INERTIA_BP1_CGP1, flap_case.INERTIA_BP1_CGP1],
-        external_forces_fn=multibody_rigid_body_drag_model,
+        I_BP1_CgP1s=[inertia_BP1_CgP1, inertia_BP1_CgP1],
+        external_forces_fn=external_forces_fn,
     )
     coupled_solver = ps.multibody_coupled_unsteady_ring_vortex_lattice_method.MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver(
         coupled_problem
@@ -361,7 +579,9 @@ def build_problem(
     clamp_diagnostics = install_streamwise_only_projection(
         coupled_problem=coupled_problem,
         target_positions_E_m=initial_positions_E_E,
-        target_angles_deg=(0.0, flap_case.FIXED_PITCH_DEG, 0.0),
+        target_angles_deg=(0.0, angle_of_attack_deg, 0.0),
+        max_abs_x_over_span=max_abs_x_over_span,
+        max_abs_speed_mps=max_abs_speed_mps,
     )
     return coupled_problem, coupled_solver, clamp_diagnostics
 
@@ -584,7 +804,7 @@ def period_average(
     steps_per_flap: int,
     num_periods: int = 1,
 ) -> np.ndarray:
-    """Average the final integer number of flapping periods."""
+    """Average the final integer number of reference periods."""
     block_size = min(len(values), max(1, steps_per_flap * num_periods))
     return np.mean(values[-block_size:], axis=0)
 
@@ -616,6 +836,10 @@ def compute_run_metrics(
     clamp_arrays: dict[str, np.ndarray],
     baseline_power_W: np.ndarray | None = None,
     wbar_arrays: dict[str, np.ndarray] | None = None,
+    aircraft_model: str = DEFAULT_AIRCRAFT_MODEL,
+    angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
+    max_abs_x_over_span: float = 20.0,
+    max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
     """Build scalar diagnostics for one streamwise formation run."""
     n_force = min(len(aero_forces_E), len(clamp_arrays["raw_forces_E_N"]))
@@ -642,29 +866,47 @@ def compute_run_metrics(
     final_period_applied_power_W = period_average(applied_power_W, steps_per_flap)
 
     summary: dict[str, Any] = {
-        "case": "streamwise_stability_energy_two_flapping_bodies",
+        "case": f"streamwise_stability_energy_two_{aircraft_model}_bodies",
+        "aircraft_model": aircraft_model,
         "wake_model": "free" if not prescribed_wake else "prescribed",
         "prescribed_wake": bool(prescribed_wake),
         "constraint_mode": "streamwise_x_free_yz_and_attitude_clamped",
+        "max_abs_x_over_span_guard": max_abs_x_over_span,
+        "max_abs_speed_mps_guard": max_abs_speed_mps,
         "x_over_span_initial": x_over_span,
         "y_over_span_prescribed": y_over_span,
         "z_over_span_prescribed": z_over_span,
         "span_m": FULL_SPAN_M,
+        "semispan_m": SEMI_SPAN_M,
+        "root_chord_m": ROOT_CHORD_M,
+        "tip_chord_m": TIP_CHORD_M,
         "chord_ref_m": REFERENCE_C_REF_M,
+        "reference_area_m2": REFERENCE_AREA_M2,
+        "aspect_ratio": ASPECT_RATIO,
+        "num_chordwise_panels": NUM_CHORDWISE_PANELS,
+        "num_spanwise_panels_total": 2 * NUM_SPANWISE_PANELS_PER_HALF,
+        "initial_collision_free": initial_condition_is_collision_free(
+            x_over_span=x_over_span,
+            y_over_span=y_over_span,
+            z_over_span=z_over_span,
+        ),
         "body_1_initial_position_E_m": positions_E_E[0, 0].tolist(),
         "body_2_initial_position_E_m": positions_E_E[0, 1].tolist(),
         "fixed_roll_deg": 0.0,
-        "fixed_pitch_deg": flap_case.FIXED_PITCH_DEG,
+        "angle_of_attack_deg": angle_of_attack_deg,
+        "initial_alpha_deg": angle_of_attack_deg,
+        "fixed_pitch_deg": angle_of_attack_deg,
+        "fixed_pitch_matches_angle_of_attack": True,
         "fixed_yaw_deg": 0.0,
-        "flapping_frequency_hz": flap_case.FLAPPING_FREQUENCY_HZ,
-        "flapping_period_s": flap_case.FLAPPING_PERIOD_S,
+        "reference_period_s": REFERENCE_PERIOD_S,
         "steps_per_flap": steps_per_flap,
-        "delta_time_s": flap_case.FLAPPING_PERIOD_S / steps_per_flap,
+        "steps_per_reference_period": steps_per_flap,
+        "delta_time_s": REFERENCE_PERIOD_S / steps_per_flap,
         "prescribed_steps": prescribed_num_steps,
         "free_steps": free_num_steps,
         "periods_total_requested": (prescribed_num_steps + free_num_steps)
         / steps_per_flap,
-        "periods_total_completed": float(times_s[-1] / flap_case.FLAPPING_PERIOD_S),
+        "periods_total_completed": float(times_s[-1] / REFERENCE_PERIOD_S),
         "run_status": run_status,
         "error_message": error_message,
         "final_x_over_span": float(x_history_m[-1] / FULL_SPAN_M),
@@ -706,7 +948,7 @@ def compute_run_metrics(
             np.max(
                 np.abs(
                     euler_angles_deg
-                    - np.array([0.0, flap_case.FIXED_PITCH_DEG, 0.0])[None, None, :]
+                    - np.array([0.0, angle_of_attack_deg, 0.0])[None, None, :]
                 )
             )
         ),
@@ -797,7 +1039,7 @@ def save_separation_velocity_plot(
 ) -> Path:
     """Save streamwise separation and velocity histories."""
     n = min(len(times_s), len(positions_E_E), len(velocities_E__E))
-    x_periods = times_s[:n] / flap_case.FLAPPING_PERIOD_S
+    x_periods = times_s[:n] / REFERENCE_PERIOD_S
     x_over_span = (positions_E_E[:n, 1, 0] - positions_E_E[:n, 0, 0]) / FULL_SPAN_M
     y_over_span = (positions_E_E[:n, 0, 1] - positions_E_E[:n, 1, 1]) / FULL_SPAN_M
     z_over_span = (positions_E_E[:n, 0, 2] - positions_E_E[:n, 1, 2]) / FULL_SPAN_M
@@ -841,7 +1083,7 @@ def save_power_plot(
 ) -> Path:
     """Save aerodynamic and total-applied streamwise power histories."""
     n = min(len(times_s), len(velocities_E__E), len(aero_forces_E), len(raw_forces_E))
-    x_periods = times_s[:n] / flap_case.FLAPPING_PERIOD_S
+    x_periods = times_s[:n] / REFERENCE_PERIOD_S
     aero_power_W = -aero_forces_E[:n, :, 0] * velocities_E__E[:n, :, 0]
     applied_power_W = -raw_forces_E[:n, :, 0] * velocities_E__E[:n, :, 0]
 
@@ -879,7 +1121,7 @@ def save_clamp_load_plot(
 ) -> Path:
     """Save clamp force and torque histories."""
     n = min(len(times_s), len(clamp_forces_yz_E), len(clamp_moments_E_Cg))
-    x_periods = times_s[:n] / flap_case.FLAPPING_PERIOD_S
+    x_periods = times_s[:n] / REFERENCE_PERIOD_S
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
     for body_index in range(2):
@@ -969,6 +1211,107 @@ def save_case_plots(
     return plots
 
 
+def make_initial_collision_skipped_summary(
+    output_dir: Path,
+    x_over_span: float,
+    y_over_span: float,
+    z_over_span: float,
+    prescribed_num_steps: int,
+    free_num_steps: int,
+    steps_per_flap: int,
+    baseline_power_W: np.ndarray | None,
+    aircraft_model: str,
+    angle_of_attack_deg: float,
+    max_abs_x_over_span: float,
+    max_abs_speed_mps: float,
+) -> dict[str, Any]:
+    """Write a summary for a case skipped before launch due to initial overlap."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    initial_positions_E_E = np.asarray(
+        body_positions_from_paper_offsets(
+            x_over_span=x_over_span,
+            y_over_span=y_over_span,
+            z_over_span=z_over_span,
+        ),
+        dtype=float,
+    )
+    error_message = (
+        "Skipped before launch: initial rectangular wing planforms overlap. "
+        "Increase |X|/B, |Y|/B, or |Z|/B."
+    )
+    summary: dict[str, Any] = {
+        "case": f"streamwise_stability_energy_two_{aircraft_model}_bodies",
+        "aircraft_model": aircraft_model,
+        "wake_model": "free",
+        "prescribed_wake": False,
+        "constraint_mode": "streamwise_x_free_yz_and_attitude_clamped",
+        "max_abs_x_over_span_guard": max_abs_x_over_span,
+        "max_abs_speed_mps_guard": max_abs_speed_mps,
+        "x_over_span_initial": x_over_span,
+        "y_over_span_prescribed": y_over_span,
+        "z_over_span_prescribed": z_over_span,
+        "span_m": FULL_SPAN_M,
+        "semispan_m": SEMI_SPAN_M,
+        "root_chord_m": ROOT_CHORD_M,
+        "tip_chord_m": TIP_CHORD_M,
+        "chord_ref_m": REFERENCE_C_REF_M,
+        "reference_area_m2": REFERENCE_AREA_M2,
+        "aspect_ratio": ASPECT_RATIO,
+        "num_chordwise_panels": NUM_CHORDWISE_PANELS,
+        "num_spanwise_panels_total": 2 * NUM_SPANWISE_PANELS_PER_HALF,
+        "initial_collision_free": False,
+        "body_1_initial_position_E_m": initial_positions_E_E[0].tolist(),
+        "body_2_initial_position_E_m": initial_positions_E_E[1].tolist(),
+        "fixed_roll_deg": 0.0,
+        "angle_of_attack_deg": angle_of_attack_deg,
+        "initial_alpha_deg": angle_of_attack_deg,
+        "fixed_pitch_deg": angle_of_attack_deg,
+        "fixed_pitch_matches_angle_of_attack": True,
+        "fixed_yaw_deg": 0.0,
+        "reference_period_s": REFERENCE_PERIOD_S,
+        "steps_per_flap": steps_per_flap,
+        "steps_per_reference_period": steps_per_flap,
+        "delta_time_s": REFERENCE_PERIOD_S / steps_per_flap,
+        "prescribed_steps": prescribed_num_steps,
+        "free_steps": free_num_steps,
+        "periods_total_requested": (prescribed_num_steps + free_num_steps)
+        / steps_per_flap,
+        "periods_total_completed": 0.0,
+        "run_status": "skipped_initial_collision",
+        "error_message": error_message,
+        "final_x_over_span": x_over_span,
+        "final_y_over_span": y_over_span,
+        "final_z_over_span": z_over_span,
+        "last_period_mean_x_over_span": x_over_span,
+        "last_period_mean_dXdt_mps": None,
+        "final_body_0_Ux_mps": None,
+        "final_body_1_Ux_mps": None,
+        "last_period_mean_Ux_mps": [None, None],
+        "last_period_mean_aero_streamwise_power_W": [None, None],
+        "last_period_mean_applied_streamwise_power_W": [None, None],
+        "last_period_mean_pair_applied_streamwise_power_W": None,
+        "last_period_mean_clamp_power_proxy_W": [None, None],
+        "max_yz_drift_m": 0.0,
+        "max_euler_deviation_deg": 0.0,
+        "stage_1_energy_metric": "not_run_initial_collision",
+        "stage_2_wbar_status": "not_run_initial_collision",
+        "clamp_force_yz_stats_N": clamp_statistics(
+            np.zeros((0, 2, 2), dtype=float),
+            ("Fy", "Fz"),
+        ),
+        "clamp_torque_stats_Nm": clamp_statistics(
+            np.zeros((0, 2, 3), dtype=float),
+            ("Mx", "My", "Mz"),
+        ),
+    }
+    if baseline_power_W is not None:
+        summary["baseline_last_period_mean_applied_power_W"] = baseline_power_W.tolist()
+        summary["last_period_delta_power_vs_baseline_W"] = [None, None]
+        summary["last_period_pair_mean_delta_power_vs_baseline_W"] = None
+    ff_utils.write_json(output_dir / "summary.json", summary)
+    return summary
+
+
 def run_streamwise_case(
     output_dir: Path,
     x_over_span: float,
@@ -984,8 +1327,36 @@ def run_streamwise_case(
     render_wake_movie: bool,
     baseline_power_W: np.ndarray | None = None,
     compute_wbar: bool = False,
+    aircraft_model: str = DEFAULT_AIRCRAFT_MODEL,
+    angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
+    max_abs_x_over_span: float = 20.0,
+    max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
     """Run one streamwise-only formation case and write diagnostics."""
+    if not initial_condition_is_collision_free(
+        x_over_span=x_over_span,
+        y_over_span=y_over_span,
+        z_over_span=z_over_span,
+    ):
+        print(
+            "Skipping initial-overlap case "
+            f"X/B={x_over_span:.3f}, Y/B={y_over_span:.3f}, Z/B={z_over_span:.3f}."
+        )
+        return make_initial_collision_skipped_summary(
+            output_dir=output_dir,
+            x_over_span=x_over_span,
+            y_over_span=y_over_span,
+            z_over_span=z_over_span,
+            prescribed_num_steps=prescribed_num_steps,
+            free_num_steps=free_num_steps,
+            steps_per_flap=steps_per_flap,
+            baseline_power_W=baseline_power_W,
+            aircraft_model=aircraft_model,
+            angle_of_attack_deg=angle_of_attack_deg,
+            max_abs_x_over_span=max_abs_x_over_span,
+            max_abs_speed_mps=max_abs_speed_mps,
+        )
+
     coupled_problem, coupled_solver, clamp_diagnostics = build_problem(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
@@ -993,6 +1364,10 @@ def run_streamwise_case(
         prescribed_num_steps=prescribed_num_steps,
         free_num_steps=free_num_steps,
         steps_per_flap=steps_per_flap,
+        aircraft_model=aircraft_model,
+        angle_of_attack_deg=angle_of_attack_deg,
+        max_abs_x_over_span=max_abs_x_over_span,
+        max_abs_speed_mps=max_abs_speed_mps,
     )
     run_status = "ok"
     error_message: str | None = None
@@ -1054,6 +1429,10 @@ def run_streamwise_case(
         clamp_arrays=clamp_arrays,
         baseline_power_W=baseline_power_W,
         wbar_arrays=wbar_arrays,
+        aircraft_model=aircraft_model,
+        angle_of_attack_deg=angle_of_attack_deg,
+        max_abs_x_over_span=max_abs_x_over_span,
+        max_abs_speed_mps=max_abs_speed_mps,
     )
     if compute_wbar and history_stride != 1:
         summary["stage_2_wbar_status"] = "skipped_requires_history_stride_1"
@@ -1392,6 +1771,10 @@ def run_sweep(
     include_x_perturbations: bool = False,
     x_perturbation_over_span: float = 0.1,
     compute_wbar: bool = False,
+    aircraft_model: str = DEFAULT_AIRCRAFT_MODEL,
+    angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
+    max_abs_x_over_span: float = 20.0,
+    max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
     """Run the requested streamwise stability and energy sweep."""
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1424,6 +1807,10 @@ def run_sweep(
             render_wake_movie=False,
             baseline_power_W=None,
             compute_wbar=compute_wbar,
+            aircraft_model=aircraft_model,
+            angle_of_attack_deg=angle_of_attack_deg,
+            max_abs_x_over_span=max_abs_x_over_span,
+            max_abs_speed_mps=max_abs_speed_mps,
         )
         baseline_power_W = np.asarray(
             baseline_summary["last_period_mean_applied_streamwise_power_W"],
@@ -1456,6 +1843,10 @@ def run_sweep(
                     render_wake_movie=render_this,
                     baseline_power_W=baseline_power_W,
                     compute_wbar=compute_wbar,
+                    aircraft_model=aircraft_model,
+                    angle_of_attack_deg=angle_of_attack_deg,
+                    max_abs_x_over_span=max_abs_x_over_span,
+                    max_abs_speed_mps=max_abs_speed_mps,
                 )
                 if render_this:
                     render_count += 1
@@ -1473,6 +1864,10 @@ def run_sweep(
     )
     sweep_summary = {
         "case": "streamwise_stability_energy_sweep",
+        "aircraft_model": aircraft_model,
+        "angle_of_attack_deg": angle_of_attack_deg,
+        "fixed_pitch_deg": angle_of_attack_deg,
+        "fixed_pitch_matches_angle_of_attack": True,
         "wake_model": "free",
         "prescribed_wake": False,
         "requested_x_over_span_values": list(requested_x_over_span_values),
@@ -1480,15 +1875,30 @@ def run_sweep(
         "y_over_span_values": list(y_over_span_values),
         "z_over_span_values": list(z_over_span_values),
         "span_m": FULL_SPAN_M,
+        "semispan_m": SEMI_SPAN_M,
+        "root_chord_m": ROOT_CHORD_M,
+        "tip_chord_m": TIP_CHORD_M,
         "chord_ref_m": REFERENCE_C_REF_M,
+        "reference_area_m2": REFERENCE_AREA_M2,
+        "aspect_ratio": ASPECT_RATIO,
+        "num_chordwise_panels": NUM_CHORDWISE_PANELS,
+        "num_spanwise_panels_total": 2 * NUM_SPANWISE_PANELS_PER_HALF,
+        "initial_collision_rule": (
+            "skip if |X| < chord, |Y| < span, and |Z| is effectively zero"
+        ),
         "total_periods": total_periods,
         "prescribed_periods": prescribed_periods,
         "steps_per_flap": steps_per_flap,
+        "steps_per_reference_period": steps_per_flap,
         "prescribed_steps": prescribed_num_steps,
         "free_steps": free_num_steps,
         "baseline_summary": baseline_summary,
         "num_cases": len(summaries),
         "num_ok_cases": sum(summary["run_status"] == "ok" for summary in summaries),
+        "num_skipped_initial_collision_cases": sum(
+            summary["run_status"] == "skipped_initial_collision"
+            for summary in summaries
+        ),
         "sweep_summary_csv": str(csv_path),
         "sweep_maps": map_paths,
         "theory_validation_9panel": (
@@ -1497,6 +1907,8 @@ def run_sweep(
         "include_x_perturbations": include_x_perturbations,
         "x_perturbation_over_span": x_perturbation_over_span,
         "compute_wbar": compute_wbar,
+        "max_abs_x_over_span_guard": max_abs_x_over_span,
+        "max_abs_speed_mps_guard": max_abs_speed_mps,
         "case_summaries": summaries,
     }
     ff_utils.write_json(output_root / "sweep_summary.json", sweep_summary)
@@ -1507,7 +1919,7 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run two flapping bodies in a streamwise-only formation slice using a "
+            "Run two fixed-wing bodies in a streamwise-only formation slice using a "
             "free vortex wake and record energy/stability/clamp diagnostics."
         )
     )
@@ -1545,7 +1957,7 @@ def parse_args() -> argparse.Namespace:
         "--total-periods",
         type=float,
         default=None,
-        help="Total flapping periods including the prescribed startup phase.",
+        help="Total reference periods including the prescribed startup phase.",
     )
     parser.add_argument(
         "--prescribed-periods",
@@ -1556,8 +1968,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--steps-per-flap",
         type=int,
-        default=DEFAULT_STEPS_PER_FLAP,
-        help="Temporal resolution in steps per flapping period.",
+        default=DEFAULT_STEPS_PER_REFERENCE_PERIOD,
+        help=(
+            "Temporal resolution in steps per reference period. The option name is "
+            "kept for compatibility with earlier flapping runs."
+        ),
+    )
+    parser.add_argument(
+        "--aircraft-model",
+        choices=(AIRCRAFT_MODEL_FIXED_WING, AIRCRAFT_MODEL_FLAPPING),
+        default=DEFAULT_AIRCRAFT_MODEL,
+        help=(
+            "Use static fixed wings for the theory study by default. The flapping "
+            "model is retained only for comparison with earlier runs."
+        ),
+    )
+    parser.add_argument(
+        "--angle-of-attack-deg",
+        type=float,
+        default=DEFAULT_ANGLE_OF_ATTACK_DEG,
+        help=(
+            "Initial alpha and fixed pitch angle for the clamped fixed-wing slice. "
+            "For this x-only theory study, pitch is kept equal to AOA."
+        ),
     )
     parser.add_argument(
         "--show-progress",
@@ -1622,6 +2055,18 @@ def parse_args() -> argparse.Namespace:
             "diagnostics. Requires retained full history."
         ),
     )
+    parser.add_argument(
+        "--max-abs-x-over-span",
+        type=float,
+        default=20.0,
+        help="Fail a case early if the streamwise separation magnitude exceeds this X/B.",
+    )
+    parser.add_argument(
+        "--max-abs-speed-mps",
+        type=float,
+        default=50.0,
+        help="Fail a case early if any body's streamwise speed magnitude exceeds this.",
+    )
     return parser.parse_args()
 
 
@@ -1676,6 +2121,10 @@ def main() -> None:
         include_x_perturbations=args.include_x_perturbations,
         x_perturbation_over_span=args.x_perturbation_over_span,
         compute_wbar=args.compute_wbar,
+        aircraft_model=args.aircraft_model,
+        angle_of_attack_deg=args.angle_of_attack_deg,
+        max_abs_x_over_span=args.max_abs_x_over_span,
+        max_abs_speed_mps=args.max_abs_speed_mps,
     )
 
 

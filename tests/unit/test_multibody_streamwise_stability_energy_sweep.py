@@ -30,6 +30,43 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
         np.testing.assert_allclose(body_1, np.array([0.0, 0.0, 0.0]))
         np.testing.assert_allclose(body_2, np.array([0.8, -0.3, 0.1]))
 
+    def test_fixed_wing_theory_geometry_uses_regular_rectangular_numbers(self) -> None:
+        """The formation-study fixed wing should use the clean requested geometry."""
+        self.assertAlmostEqual(sweep_case.FULL_SPAN_M, 1.0)
+        self.assertAlmostEqual(sweep_case.SEMI_SPAN_M, 0.5)
+        self.assertAlmostEqual(sweep_case.ROOT_CHORD_M, 0.1)
+        self.assertAlmostEqual(sweep_case.TIP_CHORD_M, 0.1)
+        self.assertAlmostEqual(sweep_case.ASPECT_RATIO, 10.0)
+
+        airplane = sweep_case.build_rectangular_fixed_wing_airplane()
+        self.assertAlmostEqual(float(airplane.s_ref), 0.1)
+        self.assertAlmostEqual(float(airplane.c_ref), 0.1)
+        self.assertAlmostEqual(float(airplane.b_ref), 1.0)
+
+    def test_initial_collision_guard_rejects_planform_overlap(self) -> None:
+        """Initial overlapping rectangular wings should be skipped before launch."""
+        self.assertFalse(
+            sweep_case.initial_condition_is_collision_free(
+                x_over_span=0.0,
+                y_over_span=0.5,
+                z_over_span=0.0,
+            )
+        )
+        self.assertTrue(
+            sweep_case.initial_condition_is_collision_free(
+                x_over_span=0.0,
+                y_over_span=0.5,
+                z_over_span=0.1,
+            )
+        )
+        self.assertTrue(
+            sweep_case.initial_condition_is_collision_free(
+                x_over_span=1.0,
+                y_over_span=0.25,
+                z_over_span=0.0,
+            )
+        )
+
     def test_clamp_history_uses_negative_removed_loads(self) -> None:
         """Clamp forces and torques should cancel constrained loads."""
         diagnostics = sweep_case.StreamwiseClampDiagnostics(

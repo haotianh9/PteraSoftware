@@ -42,6 +42,17 @@ class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
         self.assertFalse(self.summary["prescribed_wake"])
         self.assertEqual(self.summary["wake_model"], "free")
 
+    def test_angle_of_attack_is_reported(self) -> None:
+        """The streamwise theory case should make the clamped AOA explicit."""
+        self.assertEqual(
+            self.summary["angle_of_attack_deg"],
+            sweep_case.DEFAULT_ANGLE_OF_ATTACK_DEG,
+        )
+        self.assertEqual(
+            self.summary["fixed_pitch_deg"],
+            sweep_case.DEFAULT_ANGLE_OF_ATTACK_DEG,
+        )
+
     def test_constrained_coordinates_remain_clamped(self) -> None:
         """Y/Z and attitude should remain fixed under the streamwise clamp."""
         self.assertLess(self.summary["max_yz_drift_m"], 1e-10)
