@@ -1,4 +1,4 @@
-"""Smoke test for the streamwise-only multibody formation sweep."""
+"""Smoke test for the fixed-formation multibody sweep."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from examples import multibody_streamwise_stability_energy_sweep as sweep_case
 
 
 class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
-    """Validate that a tiny free-wake streamwise-only case runs."""
+    """Validate that a tiny free-wake fixed-formation case runs."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -23,7 +23,8 @@ class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
             z_over_span=0.0,
             prescribed_num_steps=2,
             free_num_steps=4,
-            steps_per_flap=4,
+            time_step_s=sweep_case.DEFAULT_TIME_STEP_S,
+            final_average_num_steps=2,
             show_progress=False,
             history_stride=1,
             save_every_n_steps=None,
@@ -43,7 +44,7 @@ class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
         self.assertEqual(self.summary["wake_model"], "free")
 
     def test_angle_of_attack_is_reported(self) -> None:
-        """The streamwise theory case should make the clamped AOA explicit."""
+        """The fixed-formation theory case should make the clamped AOA explicit."""
         self.assertEqual(
             self.summary["angle_of_attack_deg"],
             sweep_case.DEFAULT_ANGLE_OF_ATTACK_DEG,
@@ -54,14 +55,17 @@ class TestStreamwiseStabilityEnergySweep(unittest.TestCase):
         )
 
     def test_constrained_coordinates_remain_clamped(self) -> None:
-        """Y/Z and attitude should remain fixed under the streamwise clamp."""
+        """X/Y/Z and attitude should remain fixed under the formation clamp."""
+        self.assertLess(self.summary["max_xyz_drift_m"], 1e-10)
         self.assertLess(self.summary["max_yz_drift_m"], 1e-10)
         self.assertLess(self.summary["max_euler_deviation_deg"], 1e-8)
 
     def test_clamp_reactions_are_reported(self) -> None:
-        """Every streamwise run should expose clamp force and torque diagnostics."""
+        """Every formation run should expose clamp force and torque diagnostics."""
+        self.assertIn("clamp_force_xyz_stats_N", self.summary)
         self.assertIn("clamp_force_yz_stats_N", self.summary)
         self.assertIn("clamp_torque_stats_Nm", self.summary)
+        self.assertIn("body_0_Fx_rms", self.summary["clamp_force_xyz_stats_N"])
         self.assertIn("body_0_Fz_rms", self.summary["clamp_force_yz_stats_N"])
         self.assertIn("body_1_My_rms", self.summary["clamp_torque_stats_Nm"])
 

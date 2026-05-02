@@ -1,9 +1,8 @@
-"""Study streamwise-only two-bird formation stability and energy metrics.
+"""Study fixed two-bird formation trim loads and energy metrics.
 
-This example intentionally constrains each body to the theory-document slice:
-streamwise translation is free, while lateral/vertical translation and all rotations
-are held fixed by an idealized clamp. The removed loads are recorded as clamp reaction
-diagnostics so the hidden control effort remains visible.
+This example intentionally holds each body at a prescribed relative position and
+attitude. The removed loads are recorded as clamp-reaction diagnostics, including the
+streamwise force interpreted as the thrust required to maintain the formation.
 """
 
 from __future__ import annotations
@@ -26,12 +25,10 @@ from pterasoftware import _aerodynamics_functions, _transformations
 
 try:
     from examples import free_flight_case_utils as ff_utils
-    from examples import free_flight_flapping_forward as flap_case
     from examples import free_flight_gliding_wing as glide_case
     from examples import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 except ImportError:
     import free_flight_case_utils as ff_utils
-    import free_flight_flapping_forward as flap_case
     import free_flight_gliding_wing as glide_case
     import multibody_two_flapping_forward_inline_gap_sweep as inline_case
 
@@ -44,10 +41,9 @@ DEFAULT_OUTPUT_ROOT = (
 )
 
 AIRCRAFT_MODEL_FIXED_WING = "fixed_wing"
-AIRCRAFT_MODEL_FLAPPING = "flapping"
 DEFAULT_AIRCRAFT_MODEL = AIRCRAFT_MODEL_FIXED_WING
 
-REFERENCE_PERIOD_S = glide_case.REFERENCE_PERIOD_S
+REFERENCE_TIME_S = glide_case.REFERENCE_PERIOD_S
 DEFAULT_ANGLE_OF_ATTACK_DEG = glide_case.DEFAULT_INITIAL_ALPHA_DEG
 FULL_SPAN_M = 1.0
 SEMI_SPAN_M = FULL_SPAN_M / 2.0
@@ -62,13 +58,14 @@ INITIAL_COLLISION_VERTICAL_CLEARANCE_M = 1.0e-6
 DEFAULT_SMOKE_X_OVER_SPAN = (0.0, 1.0, 2.0)
 DEFAULT_SMOKE_Y_OVER_SPAN = (0.5, 1.0)
 DEFAULT_SMOKE_Z_OVER_SPAN = (0.0, 0.25)
-DEFAULT_PRODUCTION_X_OVER_SPAN = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0)
+DEFAULT_PRODUCTION_X_OVER_SPAN = (0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0)
 DEFAULT_PRODUCTION_Y_OVER_SPAN = (0.5, 0.75, 1.0, 1.25, 1.5)
 DEFAULT_PRODUCTION_Z_OVER_SPAN = (-0.5, -0.25, 0.0, 0.25, 0.5)
-DEFAULT_PRESCRIBED_PERIODS = 4.0
-DEFAULT_SMOKE_TOTAL_PERIODS = 20.0
-DEFAULT_PRODUCTION_TOTAL_PERIODS = 50.0
-DEFAULT_STEPS_PER_REFERENCE_PERIOD = glide_case.DEFAULT_STEPS_PER_REFERENCE_PERIOD
+DEFAULT_PRESCRIBED_REFERENCE_TIMES = 4.0
+DEFAULT_SMOKE_TOTAL_REFERENCE_TIMES = 20.0
+DEFAULT_PRODUCTION_TOTAL_REFERENCE_TIMES = 50.0
+DEFAULT_STEPS_PER_REFERENCE_TIME = glide_case.DEFAULT_STEPS_PER_REFERENCE_PERIOD
+DEFAULT_TIME_STEP_S = REFERENCE_TIME_S / DEFAULT_STEPS_PER_REFERENCE_TIME
 
 
 def parse_float_tuple(values_text: str) -> tuple[float, ...]:
@@ -168,11 +165,12 @@ def _quat_from_izyx_angles_deg(angles_deg: np.ndarray) -> np.ndarray:
 
 @dataclass
 class StreamwiseClampDiagnostics:
-    """Patch a multibody MuJoCo model to enforce streamwise-only motion."""
+    """Patch a multibody MuJoCo model to enforce a fixed formation."""
 
     mujoco_model: object
     target_positions_E_m: np.ndarray
     target_angles_deg: np.ndarray
+    prescribed_streamwise_speed_mps: float = glide_case.DEFAULT_INITIAL_SPEED_MPS
     span_m: float = FULL_SPAN_M
     max_abs_x_over_span: float = 20.0
     max_abs_speed_mps: float = 50.0
@@ -189,6 +187,8 @@ class StreamwiseClampDiagnostics:
             )
         if self.target_angles_deg.shape != (3,):
             raise ValueError("target_angles_deg must have shape (3,).")
+        if self.prescribed_streamwise_speed_mps <= 0.0:
+            raise ValueError("prescribed_streamwise_speed_mps must be positive.")
         if self.span_m <= 0.0:
             raise ValueError("span_m must be positive.")
         if self.max_abs_x_over_span <= 0.0:
@@ -200,7 +200,7 @@ class StreamwiseClampDiagnostics:
         self.raw_moments_E_Cg: list[np.ndarray] = []
         self.projected_forces_E: list[np.ndarray] = []
         self.projected_moments_E_Cg: list[np.ndarray] = []
-        self.preclamp_yz_velocities_E: list[np.ndarray] = []
+        self.preclamp_velocities_E: list[np.ndarray] = []
         self.preclamp_angular_rates_rad_s: list[np.ndarray] = []
 
     def install(self) -> None:
@@ -209,15 +209,14 @@ class StreamwiseClampDiagnostics:
         original_apply_loads = self.mujoco_model.apply_loads
         original_step = self.mujoco_model.step
 
-        def apply_streamwise_loads(
+        def apply_fixed_formation_loads(
             forces_E: np.ndarray,
             moments_E_Cg: np.ndarray,
         ) -> None:
             raw_forces_E = np.asarray(forces_E, dtype=float).copy()
             raw_moments_E_Cg = np.asarray(moments_E_Cg, dtype=float).copy()
-            projected_forces_E = raw_forces_E.copy()
+            projected_forces_E = np.zeros_like(raw_forces_E)
             projected_moments_E_Cg = np.zeros_like(raw_moments_E_Cg)
-            projected_forces_E[:, 1:3] = 0.0
 
             self.raw_forces_E.append(raw_forces_E)
             self.raw_moments_E_Cg.append(raw_moments_E_Cg)
@@ -225,46 +224,43 @@ class StreamwiseClampDiagnostics:
             self.projected_moments_E_Cg.append(projected_moments_E_Cg.copy())
             original_apply_loads(projected_forces_E, projected_moments_E_Cg)
 
-        def step_streamwise_only() -> None:
+        def step_fixed_formation() -> None:
             original_step()
             self.enforce_state(record=True)
 
-        self.mujoco_model.apply_loads = apply_streamwise_loads
-        self.mujoco_model.step = step_streamwise_only
+        self.mujoco_model.apply_loads = apply_fixed_formation_loads
+        self.mujoco_model.step = step_fixed_formation
 
     def enforce_state(self, record: bool) -> None:
-        """Clamp non-streamwise state components and optionally record pre-clamp rates."""
-        yz_velocities_E = np.zeros((self.mujoco_model.num_bodies, 2), dtype=float)
+        """Clamp all rigid-body state components and record pre-clamp rates."""
+        velocities_E = np.zeros((self.mujoco_model.num_bodies, 3), dtype=float)
         angular_rates_rad_s = np.zeros((self.mujoco_model.num_bodies, 3), dtype=float)
         target_quat_wxyz = _quat_from_izyx_angles_deg(self.target_angles_deg)
 
         for body_index, qpos_adr in enumerate(self.mujoco_model.body_qposadrs):
             qvel_adr = int(self.mujoco_model.body_qveladrs[body_index])
-            yz_velocities_E[body_index] = self.mujoco_model.data.qvel[
-                qvel_adr + 1 : qvel_adr + 3
+            velocities_E[body_index] = self.mujoco_model.data.qvel[
+                qvel_adr : qvel_adr + 3
             ]
             angular_rates_rad_s[body_index] = self.mujoco_model.data.qvel[
                 qvel_adr + 3 : qvel_adr + 6
             ]
 
-            self.mujoco_model.data.qpos[qpos_adr + 1] = self.target_positions_E_m[
-                body_index, 1
-            ]
-            self.mujoco_model.data.qpos[qpos_adr + 2] = self.target_positions_E_m[
-                body_index, 2
-            ]
+            self.mujoco_model.data.qpos[qpos_adr : qpos_adr + 3] = (
+                self.target_positions_E_m[body_index]
+            )
             self.mujoco_model.data.qpos[qpos_adr + 3 : qpos_adr + 7] = target_quat_wxyz
-            self.mujoco_model.data.qvel[qvel_adr + 1 : qvel_adr + 3] = 0.0
-            self.mujoco_model.data.qvel[qvel_adr + 3 : qvel_adr + 6] = 0.0
+            self.mujoco_model.data.qvel[qvel_adr] = self.prescribed_streamwise_speed_mps
+            self.mujoco_model.data.qvel[qvel_adr + 1 : qvel_adr + 6] = 0.0
 
         mujoco.mj_forward(self.mujoco_model.model, self.mujoco_model.data)
         if record:
-            self.preclamp_yz_velocities_E.append(yz_velocities_E)
+            self.preclamp_velocities_E.append(velocities_E)
             self.preclamp_angular_rates_rad_s.append(angular_rates_rad_s)
             self.raise_if_diverged()
 
     def raise_if_diverged(self) -> None:
-        """Stop a case early if x-only dynamics has clearly diverged."""
+        """Stop a case early if the fixed-formation state becomes non-finite."""
         positions_x_m = np.zeros(self.mujoco_model.num_bodies, dtype=float)
         speeds_x_mps = np.zeros(self.mujoco_model.num_bodies, dtype=float)
         for body_index, qpos_adr in enumerate(self.mujoco_model.body_qposadrs):
@@ -276,15 +272,15 @@ class StreamwiseClampDiagnostics:
         if not np.all(np.isfinite(speeds_x_mps)) or not np.isfinite(
             relative_x_over_span
         ):
-            raise RuntimeError("Streamwise-only case diverged with non-finite state.")
+            raise RuntimeError("Fixed-formation case diverged with non-finite state.")
         if np.max(np.abs(speeds_x_mps)) > self.max_abs_speed_mps:
             raise RuntimeError(
-                "Streamwise-only case exceeded speed guard: "
+                "Fixed-formation case exceeded speed guard: "
                 f"max |Ux|={np.max(np.abs(speeds_x_mps)):.3g} m/s."
             )
         if abs(relative_x_over_span) > self.max_abs_x_over_span:
             raise RuntimeError(
-                "Streamwise-only case exceeded spacing guard: "
+                "Fixed-formation case exceeded spacing guard: "
                 f"|X/B|={abs(relative_x_over_span):.3g}."
             )
 
@@ -302,8 +298,8 @@ class StreamwiseClampDiagnostics:
         projected_moments_E_Cg = _stack_history(
             self.projected_moments_E_Cg, self.mujoco_model.num_bodies, 3
         )
-        preclamp_yz_velocities_E = _stack_history(
-            self.preclamp_yz_velocities_E, self.mujoco_model.num_bodies, 2
+        preclamp_velocities_E = _stack_history(
+            self.preclamp_velocities_E, self.mujoco_model.num_bodies, 3
         )
         preclamp_angular_rates_rad_s = _stack_history(
             self.preclamp_angular_rates_rad_s, self.mujoco_model.num_bodies, 3
@@ -312,20 +308,21 @@ class StreamwiseClampDiagnostics:
         num_steps = min(
             len(raw_forces_E),
             len(raw_moments_E_Cg),
-            len(preclamp_yz_velocities_E),
+            len(preclamp_velocities_E),
             len(preclamp_angular_rates_rad_s),
         )
         raw_forces_E = raw_forces_E[:num_steps]
         raw_moments_E_Cg = raw_moments_E_Cg[:num_steps]
         projected_forces_E = projected_forces_E[:num_steps]
         projected_moments_E_Cg = projected_moments_E_Cg[:num_steps]
-        preclamp_yz_velocities_E = preclamp_yz_velocities_E[:num_steps]
+        preclamp_velocities_E = preclamp_velocities_E[:num_steps]
         preclamp_angular_rates_rad_s = preclamp_angular_rates_rad_s[:num_steps]
 
-        clamp_forces_yz_E = -raw_forces_E[:, :, 1:3]
+        clamp_forces_E = -raw_forces_E
+        clamp_forces_yz_E = clamp_forces_E[:, :, 1:3]
         clamp_moments_E_Cg = -raw_moments_E_Cg
         clamp_power_proxy_W = np.sum(
-            np.abs(clamp_forces_yz_E * preclamp_yz_velocities_E), axis=2
+            np.abs(clamp_forces_E * preclamp_velocities_E), axis=2
         ) + np.sum(
             np.abs(clamp_moments_E_Cg * preclamp_angular_rates_rad_s),
             axis=2,
@@ -336,8 +333,9 @@ class StreamwiseClampDiagnostics:
             "raw_moments_E_Cg_Nm": raw_moments_E_Cg,
             "projected_forces_E_N": projected_forces_E,
             "projected_moments_E_Cg_Nm": projected_moments_E_Cg,
-            "preclamp_yz_velocities_E_mps": preclamp_yz_velocities_E,
+            "preclamp_velocities_E_mps": preclamp_velocities_E,
             "preclamp_angular_rates_rad_s": preclamp_angular_rates_rad_s,
+            "clamp_forces_E_N": clamp_forces_E,
             "clamp_forces_yz_E_N": clamp_forces_yz_E,
             "clamp_moments_E_Cg_Nm": clamp_moments_E_Cg,
             "clamp_power_proxy_W": clamp_power_proxy_W,
@@ -353,37 +351,25 @@ def _stack_history(
     return np.stack(history, axis=0)
 
 
-def install_streamwise_only_projection(
+def install_fixed_formation_projection(
     coupled_problem: ps.problems.MultiBodyCoupledUnsteadyProblem,
     target_positions_E_m: tuple[np.ndarray, np.ndarray],
     target_angles_deg: tuple[float, float, float],
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
 ) -> StreamwiseClampDiagnostics:
-    """Install streamwise-only dynamics and return its diagnostics recorder."""
+    """Install fixed-formation dynamics and return its diagnostics recorder."""
     diagnostics = StreamwiseClampDiagnostics(
         mujoco_model=coupled_problem.mujoco_model,
         target_positions_E_m=np.vstack(target_positions_E_m),
         target_angles_deg=np.array(target_angles_deg, dtype=float),
+        prescribed_streamwise_speed_mps=glide_case.DEFAULT_INITIAL_SPEED_MPS,
         span_m=FULL_SPAN_M,
         max_abs_x_over_span=max_abs_x_over_span,
         max_abs_speed_mps=max_abs_speed_mps,
     )
     diagnostics.install()
     return diagnostics
-
-
-def multibody_rigid_body_drag_model(
-    body_index: int,
-    coupled_operating_point: ps.operating_point.CoupledOperatingPoint,
-    airplane: ps.geometry.airplane.Airplane,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Use the tuned single-body forward-flight body-drag surrogate."""
-    return inline_case.multibody_rigid_body_drag_model(
-        body_index=body_index,
-        coupled_operating_point=coupled_operating_point,
-        airplane=airplane,
-    )
 
 
 def build_rectangular_fixed_wing_airplane(
@@ -443,20 +429,6 @@ def build_fixed_wing_airplanes_and_movements() -> tuple[
     return airplane_1, airplane_2, airplane_movement_1, airplane_movement_2
 
 
-def build_flapping_airplanes_and_movements() -> tuple[
-    ps.geometry.airplane.Airplane,
-    ps.geometry.airplane.Airplane,
-    ps.movements.airplane_movement.AirplaneMovement,
-    ps.movements.airplane_movement.AirplaneMovement,
-]:
-    """Build two identical flapping aircraft and movements."""
-    airplane_1 = flap_case.build_airplane()
-    airplane_2 = flap_case.build_airplane()
-    airplane_movement_1 = flap_case.build_airplane_movement(airplane_1)
-    airplane_movement_2 = flap_case.build_airplane_movement(airplane_2)
-    return airplane_1, airplane_2, airplane_movement_1, airplane_movement_2
-
-
 def get_aircraft_setup(
     aircraft_model: str,
 ) -> tuple[
@@ -467,40 +439,22 @@ def get_aircraft_setup(
     np.ndarray,
     Any,
 ]:
-    """Return geometry, prescribed motion, inertia, and extra loads for a model."""
-    if aircraft_model == AIRCRAFT_MODEL_FIXED_WING:
-        (
-            airplane_1,
-            airplane_2,
-            airplane_movement_1,
-            airplane_movement_2,
-        ) = build_fixed_wing_airplanes_and_movements()
-        return (
-            airplane_1,
-            airplane_2,
-            airplane_movement_1,
-            airplane_movement_2,
-            glide_case.INERTIA_BP1_CGP1,
-            None,
-        )
-    if aircraft_model == AIRCRAFT_MODEL_FLAPPING:
-        (
-            airplane_1,
-            airplane_2,
-            airplane_movement_1,
-            airplane_movement_2,
-        ) = build_flapping_airplanes_and_movements()
-        return (
-            airplane_1,
-            airplane_2,
-            airplane_movement_1,
-            airplane_movement_2,
-            flap_case.INERTIA_BP1_CGP1,
-            multibody_rigid_body_drag_model,
-        )
-    raise ValueError(
-        f'aircraft_model must be "{AIRCRAFT_MODEL_FIXED_WING}" or '
-        f'"{AIRCRAFT_MODEL_FLAPPING}".'
+    """Return fixed-wing geometry, prescribed motion, inertia, and extra loads."""
+    if aircraft_model != AIRCRAFT_MODEL_FIXED_WING:
+        raise ValueError(f'aircraft_model must be "{AIRCRAFT_MODEL_FIXED_WING}".')
+    (
+        airplane_1,
+        airplane_2,
+        airplane_movement_1,
+        airplane_movement_2,
+    ) = build_fixed_wing_airplanes_and_movements()
+    return (
+        airplane_1,
+        airplane_2,
+        airplane_movement_1,
+        airplane_movement_2,
+        glide_case.INERTIA_BP1_CGP1,
+        None,
     )
 
 
@@ -510,7 +464,7 @@ def build_problem(
     z_over_span: float,
     prescribed_num_steps: int,
     free_num_steps: int,
-    steps_per_flap: int,
+    time_step_s: float,
     aircraft_model: str = DEFAULT_AIRCRAFT_MODEL,
     angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
     max_abs_x_over_span: float = 20.0,
@@ -520,8 +474,7 @@ def build_problem(
     ps.multibody_coupled_unsteady_ring_vortex_lattice_method.MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver,
     StreamwiseClampDiagnostics,
 ]:
-    """Build one two-body streamwise-only fixed-wing or flapping formation problem."""
-    delta_time = REFERENCE_PERIOD_S / steps_per_flap
+    """Build one two-body fixed-wing formation problem."""
     (
         airplane_1,
         airplane_2,
@@ -564,7 +517,7 @@ def build_problem(
             coupled_operating_point_2,
         ],
         initial_positions_E_E=initial_positions_E_E,
-        delta_time=delta_time,
+        delta_time=time_step_s,
         prescribed_num_steps=prescribed_num_steps,
         free_num_steps=free_num_steps,
     )
@@ -576,7 +529,7 @@ def build_problem(
     coupled_solver = ps.multibody_coupled_unsteady_ring_vortex_lattice_method.MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver(
         coupled_problem
     )
-    clamp_diagnostics = install_streamwise_only_projection(
+    clamp_diagnostics = install_fixed_formation_projection(
         coupled_problem=coupled_problem,
         target_positions_E_m=initial_positions_E_E,
         target_angles_deg=(0.0, angle_of_attack_deg, 0.0),
@@ -799,13 +752,12 @@ def clamp_statistics(
     return stats
 
 
-def period_average(
+def final_window_average(
     values: np.ndarray,
-    steps_per_flap: int,
-    num_periods: int = 1,
+    average_num_steps: int,
 ) -> np.ndarray:
-    """Average the final integer number of reference periods."""
-    block_size = min(len(values), max(1, steps_per_flap * num_periods))
+    """Average the final fixed-time window."""
+    block_size = min(len(values), max(1, average_num_steps))
     return np.mean(values[-block_size:], axis=0)
 
 
@@ -824,7 +776,8 @@ def compute_run_metrics(
     z_over_span: float,
     prescribed_num_steps: int,
     free_num_steps: int,
-    steps_per_flap: int,
+    time_step_s: float,
+    final_average_num_steps: int,
     prescribed_wake: bool,
     run_status: str,
     error_message: str | None,
@@ -841,7 +794,7 @@ def compute_run_metrics(
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
-    """Build scalar diagnostics for one streamwise formation run."""
+    """Build scalar diagnostics for one fixed-formation run."""
     n_force = min(len(aero_forces_E), len(clamp_arrays["raw_forces_E_N"]))
     n = min(n_force, len(times_s) - 1, len(velocities_E__E) - 1)
     if n <= 0:
@@ -851,6 +804,7 @@ def compute_run_metrics(
     velocities_sample = velocities_E__E[:n]
     aero_forces_sample_E = aero_forces_E[:n]
     raw_forces_sample_E = clamp_arrays["raw_forces_E_N"][:n]
+    clamp_forces_E = clamp_arrays["clamp_forces_E_N"][:n]
     clamp_forces_yz_E = clamp_arrays["clamp_forces_yz_E_N"][:n]
     clamp_moments_E_Cg = clamp_arrays["clamp_moments_E_Cg_Nm"][:n]
     clamp_power_proxy_W = clamp_arrays["clamp_power_proxy_W"][:n]
@@ -860,17 +814,30 @@ def compute_run_metrics(
     z_history_m = positions_sample[:, 0, 2] - positions_sample[:, 1, 2]
     d_x_dt_mps = velocities_sample[:, 1, 0] - velocities_sample[:, 0, 0]
 
-    aero_power_W = -aero_forces_sample_E[:, :, 0] * velocities_sample[:, :, 0]
-    applied_power_W = -raw_forces_sample_E[:, :, 0] * velocities_sample[:, :, 0]
-    final_period_aero_power_W = period_average(aero_power_W, steps_per_flap)
-    final_period_applied_power_W = period_average(applied_power_W, steps_per_flap)
+    required_thrust_E_N = clamp_forces_E[:, :, 0]
+    final_window_required_thrust_E_N = final_window_average(
+        required_thrust_E_N,
+        final_average_num_steps,
+    )
+    final_window_clamp_forces_E_N = final_window_average(
+        clamp_forces_E,
+        final_average_num_steps,
+    )
+    final_window_aero_forces_E_N = final_window_average(
+        aero_forces_sample_E,
+        final_average_num_steps,
+    )
+    reference_speed_mps = glide_case.DEFAULT_INITIAL_SPEED_MPS
+    final_window_required_streamwise_power_W = (
+        final_window_required_thrust_E_N * reference_speed_mps
+    )
 
     summary: dict[str, Any] = {
-        "case": f"streamwise_stability_energy_two_{aircraft_model}_bodies",
+        "case": f"fixed_formation_energy_two_{aircraft_model}_bodies",
         "aircraft_model": aircraft_model,
         "wake_model": "free" if not prescribed_wake else "prescribed",
         "prescribed_wake": bool(prescribed_wake),
-        "constraint_mode": "streamwise_x_free_yz_and_attitude_clamped",
+        "constraint_mode": "fixed_xyz_and_attitude_clamped_prescribed_streamwise_speed",
         "max_abs_x_over_span_guard": max_abs_x_over_span,
         "max_abs_speed_mps_guard": max_abs_speed_mps,
         "x_over_span_initial": x_over_span,
@@ -898,39 +865,67 @@ def compute_run_metrics(
         "fixed_pitch_deg": angle_of_attack_deg,
         "fixed_pitch_matches_angle_of_attack": True,
         "fixed_yaw_deg": 0.0,
-        "reference_period_s": REFERENCE_PERIOD_S,
-        "steps_per_flap": steps_per_flap,
-        "steps_per_reference_period": steps_per_flap,
-        "delta_time_s": REFERENCE_PERIOD_S / steps_per_flap,
+        "prescribed_streamwise_speed_mps": glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        "reference_time_s": REFERENCE_TIME_S,
+        "time_step_s": time_step_s,
+        "final_average_window_s": final_average_num_steps * time_step_s,
+        "steps_per_reference_time": int(round(REFERENCE_TIME_S / time_step_s)),
+        "delta_time_s": time_step_s,
         "prescribed_steps": prescribed_num_steps,
         "free_steps": free_num_steps,
-        "periods_total_requested": (prescribed_num_steps + free_num_steps)
-        / steps_per_flap,
-        "periods_total_completed": float(times_s[-1] / REFERENCE_PERIOD_S),
+        "prescribed_time_s": prescribed_num_steps * time_step_s,
+        "free_time_s": free_num_steps * time_step_s,
+        "time_total_requested_s": (prescribed_num_steps + free_num_steps) * time_step_s,
+        "time_total_completed_s": float(times_s[-1]),
+        "reference_time_count_requested": (
+            (prescribed_num_steps + free_num_steps) * time_step_s / REFERENCE_TIME_S
+        ),
+        "reference_time_count_completed": float(times_s[-1] / REFERENCE_TIME_S),
         "run_status": run_status,
         "error_message": error_message,
         "final_x_over_span": float(x_history_m[-1] / FULL_SPAN_M),
         "final_y_over_span": float(y_history_m[-1] / FULL_SPAN_M),
         "final_z_over_span": float(z_history_m[-1] / FULL_SPAN_M),
-        "last_period_mean_x_over_span": float(
-            period_average(x_history_m / FULL_SPAN_M, steps_per_flap)
+        "final_window_mean_x_over_span": float(
+            final_window_average(x_history_m / FULL_SPAN_M, final_average_num_steps)
         ),
-        "last_period_mean_dXdt_mps": float(period_average(d_x_dt_mps, steps_per_flap)),
+        "final_window_mean_dXdt_mps": float(
+            final_window_average(d_x_dt_mps, final_average_num_steps)
+        ),
         "final_body_0_Ux_mps": float(velocities_sample[-1, 0, 0]),
         "final_body_1_Ux_mps": float(velocities_sample[-1, 1, 0]),
-        "last_period_mean_Ux_mps": period_average(
-            velocities_sample[:, :, 0], steps_per_flap
+        "final_window_mean_Ux_mps": final_window_average(
+            velocities_sample[:, :, 0], final_average_num_steps
         ).tolist(),
-        "last_period_mean_aero_streamwise_power_W": final_period_aero_power_W.tolist(),
-        "last_period_mean_applied_streamwise_power_W": (
-            final_period_applied_power_W.tolist()
+        "final_window_mean_required_thrust_E_N": (
+            final_window_required_thrust_E_N.tolist()
         ),
-        "last_period_mean_pair_applied_streamwise_power_W": float(
-            np.mean(final_period_applied_power_W)
+        "final_window_mean_required_streamwise_power_W": (
+            final_window_required_streamwise_power_W.tolist()
         ),
-        "last_period_mean_clamp_power_proxy_W": period_average(
-            clamp_power_proxy_W, steps_per_flap
+        "final_window_pair_mean_required_streamwise_power_W": float(
+            np.mean(final_window_required_streamwise_power_W)
+        ),
+        "final_window_mean_clamp_forces_E_N": (final_window_clamp_forces_E_N.tolist()),
+        "final_window_mean_aero_forces_E_N": final_window_aero_forces_E_N.tolist(),
+        "thrust_power_reference_speed_mps": reference_speed_mps,
+        "final_window_mean_clamp_power_proxy_W": final_window_average(
+            clamp_power_proxy_W, final_average_num_steps
         ).tolist(),
+        "max_xyz_drift_m": float(
+            np.max(
+                np.abs(
+                    np.stack(
+                        (
+                            x_history_m - x_history_m[0],
+                            y_history_m - y_history_m[0],
+                            z_history_m - z_history_m[0],
+                        ),
+                        axis=1,
+                    )
+                )
+            )
+        ),
         "max_yz_drift_m": float(
             np.max(
                 np.abs(
@@ -953,13 +948,16 @@ def compute_run_metrics(
             )
         ),
         "stage_1_energy_metric": (
-            "direct streamwise force-power from recorded aerodynamic/applied loads"
+            "fixed-formation streamwise thrust requirement from clamp reaction"
         ),
         "stage_2_wbar_status": "computed" if wbar_arrays is not None else "disabled",
     }
+    summary["clamp_force_xyz_stats_N"] = clamp_statistics(
+        clamp_forces_E,
+        ("Fx", "Fy", "Fz"),
+    )
     summary["clamp_force_yz_stats_N"] = clamp_statistics(
-        clamp_forces_yz_E,
-        ("Fy", "Fz"),
+        clamp_forces_yz_E, ("Fy", "Fz")
     )
     summary["clamp_torque_stats_Nm"] = clamp_statistics(
         clamp_moments_E_Cg,
@@ -967,31 +965,33 @@ def compute_run_metrics(
     )
 
     if baseline_power_W is not None:
-        delta_power_W = final_period_applied_power_W - baseline_power_W
-        summary["baseline_last_period_mean_applied_power_W"] = baseline_power_W.tolist()
-        summary["last_period_delta_power_vs_baseline_W"] = delta_power_W.tolist()
-        summary["last_period_pair_mean_delta_power_vs_baseline_W"] = float(
+        delta_power_W = final_window_required_streamwise_power_W - baseline_power_W
+        summary["baseline_final_window_mean_required_power_W"] = (
+            baseline_power_W.tolist()
+        )
+        summary["final_window_delta_power_vs_baseline_W"] = delta_power_W.tolist()
+        summary["final_window_pair_mean_delta_power_vs_baseline_W"] = float(
             np.mean(delta_power_W)
         )
 
     if wbar_arrays is not None:
         wbar = wbar_arrays["wbar_source_to_receiver_mps"][:n]
         delta_power_wbar = wbar_arrays["delta_power_wbar_source_to_receiver_W"][:n]
-        summary["last_period_mean_wbar_source_to_receiver_mps"] = period_average(
+        summary["final_window_mean_wbar_source_to_receiver_mps"] = final_window_average(
             wbar,
-            steps_per_flap,
+            final_average_num_steps,
         )
-        summary["last_period_mean_delta_power_wbar_source_to_receiver_W"] = (
-            period_average(delta_power_wbar, steps_per_flap)
+        summary["final_window_mean_delta_power_wbar_source_to_receiver_W"] = (
+            final_window_average(delta_power_wbar, final_average_num_steps)
         )
-        summary["last_period_mean_wbar_source_to_receiver_mps"] = (
+        summary["final_window_mean_wbar_source_to_receiver_mps"] = (
             finite_array_to_jsonable(
-                summary["last_period_mean_wbar_source_to_receiver_mps"]
+                summary["final_window_mean_wbar_source_to_receiver_mps"]
             )
         )
-        summary["last_period_mean_delta_power_wbar_source_to_receiver_W"] = (
+        summary["final_window_mean_delta_power_wbar_source_to_receiver_W"] = (
             finite_array_to_jsonable(
-                summary["last_period_mean_delta_power_wbar_source_to_receiver_W"]
+                summary["final_window_mean_delta_power_wbar_source_to_receiver_W"]
             )
         )
         summary["wbar_convention"] = (
@@ -1039,31 +1039,31 @@ def save_separation_velocity_plot(
 ) -> Path:
     """Save streamwise separation and velocity histories."""
     n = min(len(times_s), len(positions_E_E), len(velocities_E__E))
-    x_periods = times_s[:n] / REFERENCE_PERIOD_S
+    x_axis_s = times_s[:n]
     x_over_span = (positions_E_E[:n, 1, 0] - positions_E_E[:n, 0, 0]) / FULL_SPAN_M
     y_over_span = (positions_E_E[:n, 0, 1] - positions_E_E[:n, 1, 1]) / FULL_SPAN_M
     z_over_span = (positions_E_E[:n, 0, 2] - positions_E_E[:n, 1, 2]) / FULL_SPAN_M
     d_x_dt = velocities_E__E[:n, 1, 0] - velocities_E__E[:n, 0, 0]
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-    axes[0].plot(x_periods, x_over_span, color="black", label="X/B")
-    axes[0].plot(x_periods, y_over_span, label="Y/B")
-    axes[0].plot(x_periods, z_over_span, label="Z/B")
+    axes[0].plot(x_axis_s, x_over_span, color="black", label="X/B")
+    axes[0].plot(x_axis_s, y_over_span, label="Y/B")
+    axes[0].plot(x_axis_s, z_over_span, label="Z/B")
     axes[0].set_ylabel("Relative Position")
     axes[0].set_title("Paper-Coordinate Formation Offsets")
     axes[0].grid(True)
     axes[0].legend()
 
-    axes[1].plot(x_periods, velocities_E__E[:n, 0, 0], label="Body 1 Ux")
-    axes[1].plot(x_periods, velocities_E__E[:n, 1, 0], label="Body 2 Ux")
+    axes[1].plot(x_axis_s, velocities_E__E[:n, 0, 0], label="Body 1 Ux")
+    axes[1].plot(x_axis_s, velocities_E__E[:n, 1, 0], label="Body 2 Ux")
     axes[1].set_ylabel("Ux (m/s)")
     axes[1].set_title("Streamwise Speeds")
     axes[1].grid(True)
     axes[1].legend()
 
-    axes[2].plot(x_periods, d_x_dt, color="tab:red")
+    axes[2].plot(x_axis_s, d_x_dt, color="tab:red")
     axes[2].set_ylabel("dX/dt (m/s)")
-    axes[2].set_xlabel("Time / Flapping Period")
+    axes[2].set_xlabel("Time (s)")
     axes[2].set_title("Streamwise Spacing Rate")
     axes[2].grid(True)
 
@@ -1077,32 +1077,35 @@ def save_separation_velocity_plot(
 def save_power_plot(
     output_dir: Path,
     times_s: np.ndarray,
-    velocities_E__E: np.ndarray,
     aero_forces_E: np.ndarray,
     raw_forces_E: np.ndarray,
 ) -> Path:
-    """Save aerodynamic and total-applied streamwise power histories."""
-    n = min(len(times_s), len(velocities_E__E), len(aero_forces_E), len(raw_forces_E))
-    x_periods = times_s[:n] / REFERENCE_PERIOD_S
-    aero_power_W = -aero_forces_E[:n, :, 0] * velocities_E__E[:n, :, 0]
-    applied_power_W = -raw_forces_E[:n, :, 0] * velocities_E__E[:n, :, 0]
+    """Save fixed-formation streamwise thrust and power histories."""
+    n = min(len(times_s), len(aero_forces_E), len(raw_forces_E))
+    x_axis_s = times_s[:n]
+    required_thrust_N = -raw_forces_E[:n, :, 0]
+    required_power_W = required_thrust_N * glide_case.DEFAULT_INITIAL_SPEED_MPS
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
     for body_index in range(2):
-        axes[0].plot(x_periods, aero_power_W[:, body_index], label=f"Body {body_index}")
-        axes[1].plot(
-            x_periods,
-            applied_power_W[:, body_index],
+        axes[0].plot(
+            x_axis_s,
+            required_thrust_N[:, body_index],
             label=f"Body {body_index}",
         )
-    axes[0].set_ylabel("Aero Px (W)")
-    axes[0].set_title("Aerodynamic Streamwise Force-Power")
+        axes[1].plot(
+            x_axis_s,
+            required_power_W[:, body_index],
+            label=f"Body {body_index}",
+        )
+    axes[0].set_ylabel("Required Fx (N)")
+    axes[0].set_title("Streamwise Clamp Reaction / Required Thrust")
     axes[0].grid(True)
     axes[0].legend()
 
-    axes[1].set_ylabel("Applied Px (W)")
-    axes[1].set_xlabel("Time / Flapping Period")
-    axes[1].set_title("Applied Streamwise Force-Power")
+    axes[1].set_ylabel("Required Power Proxy (W)")
+    axes[1].set_xlabel("Time (s)")
+    axes[1].set_title("Required Thrust x Reference Speed")
     axes[1].grid(True)
     axes[1].legend()
 
@@ -1116,51 +1119,58 @@ def save_power_plot(
 def save_clamp_load_plot(
     output_dir: Path,
     times_s: np.ndarray,
+    clamp_forces_E: np.ndarray,
     clamp_forces_yz_E: np.ndarray,
     clamp_moments_E_Cg: np.ndarray,
 ) -> Path:
     """Save clamp force and torque histories."""
-    n = min(len(times_s), len(clamp_forces_yz_E), len(clamp_moments_E_Cg))
-    x_periods = times_s[:n] / REFERENCE_PERIOD_S
+    n = min(len(times_s), len(clamp_forces_E), len(clamp_moments_E_Cg))
+    x_axis_s = times_s[:n]
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
     for body_index in range(2):
         axes[0].plot(
-            x_periods,
-            clamp_forces_yz_E[:n, body_index, 0],
+            x_axis_s,
+            clamp_forces_E[:n, body_index, 0],
+            label=f"Body {body_index} Fx",
+        )
+        axes[0].plot(
+            x_axis_s,
+            clamp_forces_E[:n, body_index, 1],
+            linestyle="--",
             label=f"Body {body_index} Fy",
         )
         axes[0].plot(
-            x_periods,
-            clamp_forces_yz_E[:n, body_index, 1],
-            linestyle="--",
+            x_axis_s,
+            clamp_forces_E[:n, body_index, 2],
+            linestyle=":",
             label=f"Body {body_index} Fz",
         )
         axes[1].plot(
-            x_periods,
+            x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 0],
             label=f"Body {body_index} Mx",
         )
         axes[1].plot(
-            x_periods,
+            x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 1],
             linestyle="--",
             label=f"Body {body_index} My",
         )
         axes[1].plot(
-            x_periods,
+            x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 2],
             linestyle=":",
             label=f"Body {body_index} Mz",
         )
 
     axes[0].set_ylabel("Clamp Force (N)")
-    axes[0].set_title("Clamp Forces in Y/Z")
+    axes[0].set_title("Clamp Forces in X/Y/Z")
     axes[0].grid(True)
     axes[0].legend(ncol=2)
 
     axes[1].set_ylabel("Clamp Torque (N m)")
-    axes[1].set_xlabel("Time / Flapping Period")
+    axes[1].set_xlabel("Time (s)")
     axes[1].set_title("Clamp Torques About CG")
     axes[1].grid(True)
     axes[1].legend(ncol=3)
@@ -1194,7 +1204,6 @@ def save_case_plots(
             save_power_plot(
                 output_dir=output_dir,
                 times_s=times_s,
-                velocities_E__E=velocities_E__E,
                 aero_forces_E=aero_forces_E,
                 raw_forces_E=clamp_arrays["raw_forces_E_N"],
             )
@@ -1203,6 +1212,7 @@ def save_case_plots(
             save_clamp_load_plot(
                 output_dir=output_dir,
                 times_s=times_s,
+                clamp_forces_E=clamp_arrays["clamp_forces_E_N"],
                 clamp_forces_yz_E=clamp_arrays["clamp_forces_yz_E_N"],
                 clamp_moments_E_Cg=clamp_arrays["clamp_moments_E_Cg_Nm"],
             )
@@ -1218,7 +1228,8 @@ def make_initial_collision_skipped_summary(
     z_over_span: float,
     prescribed_num_steps: int,
     free_num_steps: int,
-    steps_per_flap: int,
+    time_step_s: float,
+    final_average_num_steps: int,
     baseline_power_W: np.ndarray | None,
     aircraft_model: str,
     angle_of_attack_deg: float,
@@ -1240,11 +1251,11 @@ def make_initial_collision_skipped_summary(
         "Increase |X|/B, |Y|/B, or |Z|/B."
     )
     summary: dict[str, Any] = {
-        "case": f"streamwise_stability_energy_two_{aircraft_model}_bodies",
+        "case": f"fixed_formation_energy_two_{aircraft_model}_bodies",
         "aircraft_model": aircraft_model,
         "wake_model": "free",
         "prescribed_wake": False,
-        "constraint_mode": "streamwise_x_free_yz_and_attitude_clamped",
+        "constraint_mode": "fixed_xyz_and_attitude_clamped_prescribed_streamwise_speed",
         "max_abs_x_over_span_guard": max_abs_x_over_span,
         "max_abs_speed_mps_guard": max_abs_speed_mps,
         "x_over_span_initial": x_over_span,
@@ -1268,36 +1279,47 @@ def make_initial_collision_skipped_summary(
         "fixed_pitch_deg": angle_of_attack_deg,
         "fixed_pitch_matches_angle_of_attack": True,
         "fixed_yaw_deg": 0.0,
-        "reference_period_s": REFERENCE_PERIOD_S,
-        "steps_per_flap": steps_per_flap,
-        "steps_per_reference_period": steps_per_flap,
-        "delta_time_s": REFERENCE_PERIOD_S / steps_per_flap,
+        "prescribed_streamwise_speed_mps": glide_case.DEFAULT_INITIAL_SPEED_MPS,
+        "reference_time_s": REFERENCE_TIME_S,
+        "time_step_s": time_step_s,
+        "final_average_window_s": final_average_num_steps * time_step_s,
+        "steps_per_reference_time": int(round(REFERENCE_TIME_S / time_step_s)),
+        "delta_time_s": time_step_s,
         "prescribed_steps": prescribed_num_steps,
         "free_steps": free_num_steps,
-        "periods_total_requested": (prescribed_num_steps + free_num_steps)
-        / steps_per_flap,
-        "periods_total_completed": 0.0,
+        "prescribed_time_s": prescribed_num_steps * time_step_s,
+        "free_time_s": free_num_steps * time_step_s,
+        "time_total_requested_s": (prescribed_num_steps + free_num_steps) * time_step_s,
+        "time_total_completed_s": 0.0,
+        "reference_time_count_requested": (
+            (prescribed_num_steps + free_num_steps) * time_step_s / REFERENCE_TIME_S
+        ),
+        "reference_time_count_completed": 0.0,
         "run_status": "skipped_initial_collision",
         "error_message": error_message,
         "final_x_over_span": x_over_span,
         "final_y_over_span": y_over_span,
         "final_z_over_span": z_over_span,
-        "last_period_mean_x_over_span": x_over_span,
-        "last_period_mean_dXdt_mps": None,
+        "final_window_mean_x_over_span": x_over_span,
+        "final_window_mean_dXdt_mps": None,
         "final_body_0_Ux_mps": None,
         "final_body_1_Ux_mps": None,
-        "last_period_mean_Ux_mps": [None, None],
-        "last_period_mean_aero_streamwise_power_W": [None, None],
-        "last_period_mean_applied_streamwise_power_W": [None, None],
-        "last_period_mean_pair_applied_streamwise_power_W": None,
-        "last_period_mean_clamp_power_proxy_W": [None, None],
+        "final_window_mean_Ux_mps": [None, None],
+        "final_window_mean_required_thrust_E_N": [None, None],
+        "final_window_mean_required_streamwise_power_W": [None, None],
+        "final_window_pair_mean_required_streamwise_power_W": None,
+        "final_window_mean_clamp_power_proxy_W": [None, None],
+        "max_xyz_drift_m": 0.0,
         "max_yz_drift_m": 0.0,
         "max_euler_deviation_deg": 0.0,
         "stage_1_energy_metric": "not_run_initial_collision",
         "stage_2_wbar_status": "not_run_initial_collision",
+        "clamp_force_xyz_stats_N": clamp_statistics(
+            np.zeros((0, 2, 3), dtype=float),
+            ("Fx", "Fy", "Fz"),
+        ),
         "clamp_force_yz_stats_N": clamp_statistics(
-            np.zeros((0, 2, 2), dtype=float),
-            ("Fy", "Fz"),
+            np.zeros((0, 2, 2), dtype=float), ("Fy", "Fz")
         ),
         "clamp_torque_stats_Nm": clamp_statistics(
             np.zeros((0, 2, 3), dtype=float),
@@ -1305,9 +1327,11 @@ def make_initial_collision_skipped_summary(
         ),
     }
     if baseline_power_W is not None:
-        summary["baseline_last_period_mean_applied_power_W"] = baseline_power_W.tolist()
-        summary["last_period_delta_power_vs_baseline_W"] = [None, None]
-        summary["last_period_pair_mean_delta_power_vs_baseline_W"] = None
+        summary["baseline_final_window_mean_required_power_W"] = (
+            baseline_power_W.tolist()
+        )
+        summary["final_window_delta_power_vs_baseline_W"] = [None, None]
+        summary["final_window_pair_mean_delta_power_vs_baseline_W"] = None
     ff_utils.write_json(output_dir / "summary.json", summary)
     return summary
 
@@ -1319,7 +1343,8 @@ def run_streamwise_case(
     z_over_span: float,
     prescribed_num_steps: int,
     free_num_steps: int,
-    steps_per_flap: int,
+    time_step_s: float,
+    final_average_num_steps: int,
     show_progress: bool,
     history_stride: int,
     save_every_n_steps: int | None,
@@ -1332,7 +1357,7 @@ def run_streamwise_case(
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
-    """Run one streamwise-only formation case and write diagnostics."""
+    """Run one fixed-formation case and write diagnostics."""
     if not initial_condition_is_collision_free(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
@@ -1349,7 +1374,8 @@ def run_streamwise_case(
             z_over_span=z_over_span,
             prescribed_num_steps=prescribed_num_steps,
             free_num_steps=free_num_steps,
-            steps_per_flap=steps_per_flap,
+            time_step_s=time_step_s,
+            final_average_num_steps=final_average_num_steps,
             baseline_power_W=baseline_power_W,
             aircraft_model=aircraft_model,
             angle_of_attack_deg=angle_of_attack_deg,
@@ -1363,7 +1389,7 @@ def run_streamwise_case(
         z_over_span=z_over_span,
         prescribed_num_steps=prescribed_num_steps,
         free_num_steps=free_num_steps,
-        steps_per_flap=steps_per_flap,
+        time_step_s=time_step_s,
         aircraft_model=aircraft_model,
         angle_of_attack_deg=angle_of_attack_deg,
         max_abs_x_over_span=max_abs_x_over_span,
@@ -1383,7 +1409,7 @@ def run_streamwise_case(
         run_status = "failed"
         error_message = repr(exc)
         print(
-            "Streamwise case failed; saving partial diagnostics for "
+            "Fixed-formation case failed; saving partial diagnostics for "
             f"X/B={x_over_span:.3f}, Y/B={y_over_span:.3f}, Z/B={z_over_span:.3f}. "
             f"Error: {error_message}"
         )
@@ -1417,7 +1443,8 @@ def run_streamwise_case(
         z_over_span=z_over_span,
         prescribed_num_steps=prescribed_num_steps,
         free_num_steps=free_num_steps,
-        steps_per_flap=steps_per_flap,
+        time_step_s=time_step_s,
+        final_average_num_steps=final_average_num_steps,
         prescribed_wake=False,
         run_status=run_status,
         error_message=error_message,
@@ -1476,23 +1503,30 @@ def summary_csv_row(summary: dict[str, Any]) -> dict[str, Any]:
         "y_over_span_prescribed",
         "z_over_span_prescribed",
         "final_x_over_span",
-        "last_period_mean_x_over_span",
-        "last_period_mean_dXdt_mps",
-        "last_period_mean_pair_applied_streamwise_power_W",
-        "last_period_pair_mean_delta_power_vs_baseline_W",
+        "final_window_mean_x_over_span",
+        "final_window_mean_dXdt_mps",
+        "final_window_pair_mean_required_streamwise_power_W",
+        "final_window_pair_mean_delta_power_vs_baseline_W",
+        "max_xyz_drift_m",
         "max_yz_drift_m",
         "max_euler_deviation_deg",
-        "periods_total_completed",
+        "time_total_completed_s",
     )
     row = {key: summary.get(key, "") for key in row_keys}
     for body_index in range(2):
         prefix = f"body_{body_index}_"
-        row[f"{prefix}last_period_mean_Ux_mps"] = summary["last_period_mean_Ux_mps"][
+        row[f"{prefix}final_window_mean_Ux_mps"] = summary["final_window_mean_Ux_mps"][
             body_index
         ]
-        row[f"{prefix}last_period_mean_applied_power_W"] = summary[
-            "last_period_mean_applied_streamwise_power_W"
+        row[f"{prefix}final_window_mean_required_thrust_N"] = summary[
+            "final_window_mean_required_thrust_E_N"
         ][body_index]
+        row[f"{prefix}final_window_mean_required_power_W"] = summary[
+            "final_window_mean_required_streamwise_power_W"
+        ][body_index]
+        row[f"{prefix}clamp_Fx_rms_N"] = summary["clamp_force_xyz_stats_N"][
+            f"{prefix}Fx_rms"
+        ]
         row[f"{prefix}clamp_Fy_rms_N"] = summary["clamp_force_yz_stats_N"][
             f"{prefix}Fy_rms"
         ]
@@ -1540,16 +1574,20 @@ def save_sweep_maps(
         [s["z_over_span_prescribed"] for s in ok_summaries], dtype=float
     )
     x_values = np.array([s["x_over_span_initial"] for s in ok_summaries], dtype=float)
-    drift_values = np.array(
-        [s["last_period_mean_dXdt_mps"] for s in ok_summaries],
-        dtype=float,
-    )
     power_values = np.array(
         [
             s.get(
-                "last_period_pair_mean_delta_power_vs_baseline_W",
-                s["last_period_mean_pair_applied_streamwise_power_W"],
+                "final_window_pair_mean_delta_power_vs_baseline_W",
+                s["final_window_pair_mean_required_streamwise_power_W"],
             )
+            for s in ok_summaries
+        ],
+        dtype=float,
+    )
+    thrust_difference_values = np.array(
+        [
+            s["final_window_mean_required_thrust_E_N"][1]
+            - s["final_window_mean_required_thrust_E_N"][0]
             for s in ok_summaries
         ],
         dtype=float,
@@ -1568,8 +1606,12 @@ def save_sweep_maps(
 
     paths: dict[str, str] = {}
     map_specs = (
-        ("energy_map.png", power_values, "Power metric (W)"),
-        ("stability_map.png", -np.abs(drift_values), "-|mean dX/dt| (m/s)"),
+        ("energy_map.png", power_values, "Required power metric (W)"),
+        (
+            "thrust_difference_map.png",
+            thrust_difference_values,
+            "Body 2 - Body 1 required Fx (N)",
+        ),
         ("clamp_load_map.png", clamp_values, "Mean Fz clamp RMS (N)"),
     )
     for filename, color_values, color_label in map_specs:
@@ -1630,7 +1672,8 @@ def _plot_slice_scatter(
     color_values = np.array(
         [
             summary.get(
-                color_key, summary["last_period_mean_pair_applied_streamwise_power_W"]
+                color_key,
+                summary["final_window_pair_mean_required_streamwise_power_W"],
             )
             for summary in slice_summaries
         ],
@@ -1664,16 +1707,17 @@ def save_theory_validation_9panel(
         return None
 
     for summary in ok_summaries:
-        summary["stability_margin_proxy_mps"] = -abs(
-            summary["last_period_mean_dXdt_mps"]
+        summary["thrust_difference_N"] = (
+            summary["final_window_mean_required_thrust_E_N"][1]
+            - summary["final_window_mean_required_thrust_E_N"][0]
         )
         summary["pair_power_metric_W"] = summary.get(
-            "last_period_pair_mean_delta_power_vs_baseline_W",
-            summary["last_period_mean_pair_applied_streamwise_power_W"],
+            "final_window_pair_mean_delta_power_vs_baseline_W",
+            summary["final_window_pair_mean_required_streamwise_power_W"],
         )
         summary["body_0_power_metric_W"] = summary.get(
-            "last_period_delta_power_vs_baseline_W",
-            summary["last_period_mean_applied_streamwise_power_W"],
+            "final_window_delta_power_vs_baseline_W",
+            summary["final_window_mean_required_streamwise_power_W"],
         )[0]
 
     x_values = np.array([s["x_over_span_initial"] for s in ok_summaries], dtype=float)
@@ -1690,7 +1734,7 @@ def save_theory_validation_9panel(
     rows = (
         ("body_0_power_metric_W", "Body 1 Power Metric"),
         ("pair_power_metric_W", "Pair-Average Power Metric"),
-        ("stability_margin_proxy_mps", "Streamwise Stability Proxy"),
+        ("thrust_difference_N", "Required Thrust Difference"),
     )
     columns = (
         (
@@ -1732,7 +1776,7 @@ def save_theory_validation_9panel(
                 title=f"{row_title}\n{col_title}",
             )
 
-    fig.suptitle("Streamwise Formation Energy And Stability Slices")
+    fig.suptitle("Fixed-Formation Energy And Trim-Load Slices")
     fig.tight_layout()
     save_path = output_root / "theory_validation_9panel.png"
     fig.savefig(save_path, dpi=150)
@@ -1758,9 +1802,10 @@ def run_sweep(
     x_over_span_values: tuple[float, ...],
     y_over_span_values: tuple[float, ...],
     z_over_span_values: tuple[float, ...],
-    total_periods: float,
-    prescribed_periods: float,
-    steps_per_flap: int,
+    total_time_s: float,
+    prescribed_time_s: float,
+    time_step_s: float,
+    final_average_window_s: float,
     show_progress: bool,
     history_stride: int,
     save_every_n_steps: int | None,
@@ -1776,7 +1821,7 @@ def run_sweep(
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
 ) -> dict[str, Any]:
-    """Run the requested streamwise stability and energy sweep."""
+    """Run the requested fixed-formation energy and trim-load sweep."""
     output_root.mkdir(parents=True, exist_ok=True)
     requested_x_over_span_values = x_over_span_values
     if include_x_perturbations:
@@ -1784,9 +1829,12 @@ def run_sweep(
             x_over_span_values=x_over_span_values,
             perturbation_over_span=x_perturbation_over_span,
         )
-    prescribed_num_steps = int(round(prescribed_periods * steps_per_flap))
-    total_num_steps = int(round(total_periods * steps_per_flap))
+    if time_step_s <= 0.0:
+        raise ValueError("time_step_s must be positive.")
+    prescribed_num_steps = int(round(prescribed_time_s / time_step_s))
+    total_num_steps = int(round(total_time_s / time_step_s))
     free_num_steps = max(1, total_num_steps - prescribed_num_steps)
+    final_average_num_steps = max(1, int(round(final_average_window_s / time_step_s)))
 
     baseline_power_W: np.ndarray | None = None
     baseline_summary: dict[str, Any] | None = None
@@ -1799,7 +1847,8 @@ def run_sweep(
             z_over_span=0.0,
             prescribed_num_steps=prescribed_num_steps,
             free_num_steps=free_num_steps,
-            steps_per_flap=steps_per_flap,
+            time_step_s=time_step_s,
+            final_average_num_steps=final_average_num_steps,
             show_progress=show_progress,
             history_stride=history_stride,
             save_every_n_steps=save_every_n_steps,
@@ -1813,7 +1862,7 @@ def run_sweep(
             max_abs_speed_mps=max_abs_speed_mps,
         )
         baseline_power_W = np.asarray(
-            baseline_summary["last_period_mean_applied_streamwise_power_W"],
+            baseline_summary["final_window_mean_required_streamwise_power_W"],
             dtype=float,
         )
 
@@ -1835,7 +1884,8 @@ def run_sweep(
                     z_over_span=z_over_span,
                     prescribed_num_steps=prescribed_num_steps,
                     free_num_steps=free_num_steps,
-                    steps_per_flap=steps_per_flap,
+                    time_step_s=time_step_s,
+                    final_average_num_steps=final_average_num_steps,
                     show_progress=show_progress,
                     history_stride=history_stride,
                     save_every_n_steps=save_every_n_steps,
@@ -1852,7 +1902,7 @@ def run_sweep(
                     render_count += 1
                 summaries.append(summary)
                 print(
-                    f"Saved streamwise case {this_label}: "
+                    f"Saved fixed-formation case {this_label}: "
                     f"{summary['run_status']} -> {this_output_dir / 'summary.json'}"
                 )
 
@@ -1863,7 +1913,7 @@ def run_sweep(
         summaries=summaries,
     )
     sweep_summary = {
-        "case": "streamwise_stability_energy_sweep",
+        "case": "fixed_formation_energy_sweep",
         "aircraft_model": aircraft_model,
         "angle_of_attack_deg": angle_of_attack_deg,
         "fixed_pitch_deg": angle_of_attack_deg,
@@ -1886,10 +1936,13 @@ def run_sweep(
         "initial_collision_rule": (
             "skip if |X| < chord, |Y| < span, and |Z| is effectively zero"
         ),
-        "total_periods": total_periods,
-        "prescribed_periods": prescribed_periods,
-        "steps_per_flap": steps_per_flap,
-        "steps_per_reference_period": steps_per_flap,
+        "reference_time_s": REFERENCE_TIME_S,
+        "total_time_s": total_time_s,
+        "prescribed_time_s": prescribed_time_s,
+        "free_time_s": free_num_steps * time_step_s,
+        "time_step_s": time_step_s,
+        "final_average_window_s": final_average_window_s,
+        "steps_per_reference_time": int(round(REFERENCE_TIME_S / time_step_s)),
         "prescribed_steps": prescribed_num_steps,
         "free_steps": free_num_steps,
         "baseline_summary": baseline_summary,
@@ -1919,8 +1972,8 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run two fixed-wing bodies in a streamwise-only formation slice using a "
-            "free vortex wake and record energy/stability/clamp diagnostics."
+            "Run two fixed-wing bodies in a fully fixed formation using a free vortex "
+            "wake and record thrust, energy, and clamp-load diagnostics."
         )
     )
     parser.add_argument(
@@ -1954,34 +2007,34 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated prescribed Z/B values for custom or override sweeps.",
     )
     parser.add_argument(
-        "--total-periods",
+        "--total-time-s",
         type=float,
         default=None,
-        help="Total reference periods including the prescribed startup phase.",
+        help="Total physical simulation time in seconds.",
     )
     parser.add_argument(
-        "--prescribed-periods",
+        "--prescribed-time-s",
         type=float,
-        default=DEFAULT_PRESCRIBED_PERIODS,
-        help="Prescribed startup periods before x-only dynamics receives loads.",
+        default=DEFAULT_PRESCRIBED_REFERENCE_TIMES * REFERENCE_TIME_S,
+        help="Prescribed startup time in seconds before diagnostics are sampled.",
     )
     parser.add_argument(
-        "--steps-per-flap",
-        type=int,
-        default=DEFAULT_STEPS_PER_REFERENCE_PERIOD,
-        help=(
-            "Temporal resolution in steps per reference period. The option name is "
-            "kept for compatibility with earlier flapping runs."
-        ),
+        "--time-step-s",
+        type=float,
+        default=DEFAULT_TIME_STEP_S,
+        help="Physical solver time step in seconds.",
+    )
+    parser.add_argument(
+        "--final-average-window-s",
+        type=float,
+        default=REFERENCE_TIME_S,
+        help="Final physical-time window used for mean forces and power.",
     )
     parser.add_argument(
         "--aircraft-model",
-        choices=(AIRCRAFT_MODEL_FIXED_WING, AIRCRAFT_MODEL_FLAPPING),
+        choices=(AIRCRAFT_MODEL_FIXED_WING,),
         default=DEFAULT_AIRCRAFT_MODEL,
-        help=(
-            "Use static fixed wings for the theory study by default. The flapping "
-            "model is retained only for comparison with earlier runs."
-        ),
+        help="Static fixed-wing model used by this formation-trim sweep.",
     )
     parser.add_argument(
         "--angle-of-attack-deg",
@@ -1989,7 +2042,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_ANGLE_OF_ATTACK_DEG,
         help=(
             "Initial alpha and fixed pitch angle for the clamped fixed-wing slice. "
-            "For this x-only theory study, pitch is kept equal to AOA."
+            "For this fixed-formation theory study, pitch is kept equal to AOA."
         ),
     )
     parser.add_argument(
@@ -2081,12 +2134,12 @@ def _resolve_grid(args: argparse.Namespace) -> tuple[
         x_values = DEFAULT_PRODUCTION_X_OVER_SPAN
         y_values = DEFAULT_PRODUCTION_Y_OVER_SPAN
         z_values = DEFAULT_PRODUCTION_Z_OVER_SPAN
-        total_periods = DEFAULT_PRODUCTION_TOTAL_PERIODS
+        total_time_s = DEFAULT_PRODUCTION_TOTAL_REFERENCE_TIMES * REFERENCE_TIME_S
     else:
         x_values = DEFAULT_SMOKE_X_OVER_SPAN
         y_values = DEFAULT_SMOKE_Y_OVER_SPAN
         z_values = DEFAULT_SMOKE_Z_OVER_SPAN
-        total_periods = DEFAULT_SMOKE_TOTAL_PERIODS
+        total_time_s = DEFAULT_SMOKE_TOTAL_REFERENCE_TIMES * REFERENCE_TIME_S
 
     if args.x_over_span is not None:
         x_values = parse_float_tuple(args.x_over_span)
@@ -2094,23 +2147,24 @@ def _resolve_grid(args: argparse.Namespace) -> tuple[
         y_values = parse_float_tuple(args.y_over_span)
     if args.z_over_span is not None:
         z_values = parse_float_tuple(args.z_over_span)
-    if args.total_periods is not None:
-        total_periods = float(args.total_periods)
-    return x_values, y_values, z_values, total_periods
+    if args.total_time_s is not None:
+        total_time_s = float(args.total_time_s)
+    return x_values, y_values, z_values, total_time_s
 
 
 def main() -> None:
     """Run the requested sweep."""
     args = parse_args()
-    x_values, y_values, z_values, total_periods = _resolve_grid(args)
+    x_values, y_values, z_values, total_time_s = _resolve_grid(args)
     run_sweep(
         output_root=args.output_root,
         x_over_span_values=x_values,
         y_over_span_values=y_values,
         z_over_span_values=z_values,
-        total_periods=total_periods,
-        prescribed_periods=args.prescribed_periods,
-        steps_per_flap=args.steps_per_flap,
+        total_time_s=total_time_s,
+        prescribed_time_s=args.prescribed_time_s,
+        time_step_s=args.time_step_s,
+        final_average_window_s=args.final_average_window_s,
         show_progress=args.show_progress,
         history_stride=args.history_stride,
         save_every_n_steps=args.save_every_n_steps,

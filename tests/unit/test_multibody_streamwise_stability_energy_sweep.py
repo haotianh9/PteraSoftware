@@ -97,18 +97,18 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
         diagnostics.projected_forces_E.append(
             np.array(
                 [
-                    [1.0, 0.0, 0.0],
-                    [-4.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
                 ],
                 dtype=float,
             )
         )
         diagnostics.projected_moments_E_Cg.append(np.zeros((2, 3), dtype=float))
-        diagnostics.preclamp_yz_velocities_E.append(
+        diagnostics.preclamp_velocities_E.append(
             np.array(
                 [
-                    [0.5, -0.25],
-                    [0.1, 0.2],
+                    [0.25, 0.5, -0.25],
+                    [-0.3, 0.1, 0.2],
                 ],
                 dtype=float,
             )
@@ -125,6 +125,10 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
 
         arrays = diagnostics.history_arrays()
 
+        np.testing.assert_allclose(
+            arrays["clamp_forces_E_N"][0],
+            np.array([[-1.0, -2.0, 3.0], [4.0, 5.0, -6.0]]),
+        )
         np.testing.assert_allclose(
             arrays["clamp_forces_yz_E_N"][0],
             np.array([[-2.0, 3.0], [5.0, -6.0]]),
