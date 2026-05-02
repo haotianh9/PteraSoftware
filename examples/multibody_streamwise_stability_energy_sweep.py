@@ -22,7 +22,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pterasoftware as ps
-from pterasoftware import _transformations
+from pterasoftware import _aerodynamics_functions, _transformations
 
 try:
     from examples import free_flight_case_utils as ff_utils
@@ -395,6 +395,166 @@ def aerodynamic_forces_E_history(
     return forces_E
 
 
+def _empty_velocity(points_E: np.ndarray) -> np.ndarray:
+    """Return a zero velocity array matching a point array."""
+    return np.zeros_like(points_E, dtype=float)
+
+
+def _collect_receiver_points_and_weights(
+    airplane: ps.geometry.airplane.Airplane,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Collect receiver collocation points and lift-like weights."""
+    points: list[np.ndarray] = []
+    weights: list[float] = []
+    areas: list[float] = []
+    for wing in airplane.wings:
+        panels = wing.panels
+        if panels is None:
+            continue
+        for panel in np.ravel(panels):
+            points.append(np.asarray(panel.Cpp_GP1_CgP1, dtype=float))
+            areas.append(float(panel.area))
+            panel_force = np.asarray(
+                getattr(panel, "forces_GP1", np.zeros(3, dtype=float)),
+                dtype=float,
+            )
+            weights.append(abs(float(panel_force[2])))
+
+    if not points:
+        return np.zeros((0, 3), dtype=float), np.zeros(0, dtype=float)
+
+    points_array = np.vstack(points)
+    weights_array = np.asarray(weights, dtype=float)
+    if np.sum(weights_array) <= 1e-14:
+        weights_array = np.asarray(areas, dtype=float)
+    return points_array, weights_array
+
+
+def _collect_ring_arrays(
+    rings: list[Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Collect ring-vortex vertices, strengths, and ages for Biot-Savart calls."""
+    if not rings:
+        empty_points = np.zeros((0, 3), dtype=float)
+        return (
+            empty_points,
+            empty_points,
+            empty_points,
+            empty_points,
+            np.zeros(0, dtype=float),
+            np.zeros(0, dtype=float),
+        )
+
+    stack_brrvp = np.vstack([ring.Brrvp_GP1_CgP1 for ring in rings])
+    stack_frrvp = np.vstack([ring.Frrvp_GP1_CgP1 for ring in rings])
+    stack_flrvp = np.vstack([ring.Flrvp_GP1_CgP1 for ring in rings])
+    stack_blrvp = np.vstack([ring.Blrvp_GP1_CgP1 for ring in rings])
+    strengths = np.asarray([ring.strength for ring in rings], dtype=float)
+    ages = np.asarray([getattr(ring, "age", 0.0) for ring in rings], dtype=float)
+    return stack_brrvp, stack_frrvp, stack_flrvp, stack_blrvp, strengths, ages
+
+
+def _collect_source_rings(
+    airplane: ps.geometry.airplane.Airplane,
+) -> tuple[list[Any], list[Any]]:
+    """Collect bound and wake rings for one source body."""
+    bound_rings: list[Any] = []
+    wake_rings: list[Any] = []
+    for wing in airplane.wings:
+        panels = wing.panels
+        if panels is not None:
+            for panel in np.ravel(panels):
+                if panel.ring_vortex is not None:
+                    bound_rings.append(panel.ring_vortex)
+        if wing.wake_ring_vortices is not None:
+            for wake_ring in np.ravel(wing.wake_ring_vortices):
+                if wake_ring is not None:
+                    wake_rings.append(wake_ring)
+    return bound_rings, wake_rings
+
+
+def _induced_velocity_from_rings(
+    points_E: np.ndarray,
+    rings: list[Any],
+    nu: float,
+    use_ages: bool,
+) -> np.ndarray:
+    """Compute induced velocity at points from a source ring-vortex collection."""
+    if len(points_E) == 0 or not rings:
+        return _empty_velocity(points_E)
+
+    (
+        stack_brrvp,
+        stack_frrvp,
+        stack_flrvp,
+        stack_blrvp,
+        strengths,
+        ages,
+    ) = _collect_ring_arrays(rings)
+    return _aerodynamics_functions.collapsed_velocities_from_ring_vortices(
+        stackP_GP1_CgP1=points_E,
+        stackBrrvp_GP1_CgP1=stack_brrvp,
+        stackFrrvp_GP1_CgP1=stack_frrvp,
+        stackFlrvp_GP1_CgP1=stack_flrvp,
+        stackBlrvp_GP1_CgP1=stack_blrvp,
+        strengths=strengths,
+        r_c0s=np.zeros(len(strengths), dtype=float),
+        singularity_counts=np.zeros(4, dtype=np.int64),
+        ages=ages if use_ages else None,
+        nu=nu,
+    )
+
+
+def compute_source_separated_wbar_history(
+    coupled_solver: ps.multibody_coupled_unsteady_ring_vortex_lattice_method.MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver,
+) -> dict[str, np.ndarray]:
+    """Approximate lift-weighted Wbar from source-separated bound+wake rings.
+
+    The output convention is ``wbar_source_to_receiver_mps[step, source, receiver]``.
+    Diagonal entries are NaN because a body is not treated as a source to itself.
+    """
+    num_steps = len(coupled_solver.multi_body_coupled_steady_problems)
+    wbar = np.full(
+        (num_steps, coupled_solver.num_bodies, coupled_solver.num_bodies),
+        np.nan,
+        dtype=float,
+    )
+    delta_power = np.full_like(wbar, np.nan)
+
+    for step, problem in enumerate(coupled_solver.multi_body_coupled_steady_problems):
+        if problem is None:
+            continue
+        for receiver_index, receiver_airplane in enumerate(problem.airplanes):
+            points_E, weights = _collect_receiver_points_and_weights(receiver_airplane)
+            if len(points_E) == 0 or np.sum(weights) <= 1e-14:
+                continue
+            for source_index, source_airplane in enumerate(problem.airplanes):
+                if source_index == receiver_index:
+                    continue
+                bound_rings, wake_rings = _collect_source_rings(source_airplane)
+                source_velocity_E = _induced_velocity_from_rings(
+                    points_E=points_E,
+                    rings=bound_rings,
+                    nu=coupled_solver._shared_nu,
+                    use_ages=False,
+                ) + _induced_velocity_from_rings(
+                    points_E=points_E,
+                    rings=wake_rings,
+                    nu=coupled_solver._shared_nu,
+                    use_ages=True,
+                )
+                wbar_value = float(np.average(source_velocity_E[:, 2], weights=weights))
+                wbar[step, source_index, receiver_index] = wbar_value
+                delta_power[step, source_index, receiver_index] = (
+                    -receiver_airplane.weight * wbar_value
+                )
+
+    return {
+        "wbar_source_to_receiver_mps": wbar,
+        "delta_power_wbar_source_to_receiver_W": delta_power,
+    }
+
+
 def clamp_statistics(
     values: np.ndarray, component_names: tuple[str, ...]
 ) -> dict[str, Any]:
@@ -429,6 +589,15 @@ def period_average(
     return np.mean(values[-block_size:], axis=0)
 
 
+def finite_array_to_jsonable(values: np.ndarray) -> Any:
+    """Convert a numeric array to nested JSON values, replacing NaN/Inf with null."""
+    values = np.asarray(values, dtype=float)
+    if values.ndim == 0:
+        scalar = float(values)
+        return None if not np.isfinite(scalar) else scalar
+    return [finite_array_to_jsonable(child) for child in values]
+
+
 def compute_run_metrics(
     x_over_span: float,
     y_over_span: float,
@@ -446,6 +615,7 @@ def compute_run_metrics(
     aero_forces_E: np.ndarray,
     clamp_arrays: dict[str, np.ndarray],
     baseline_power_W: np.ndarray | None = None,
+    wbar_arrays: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Build scalar diagnostics for one streamwise formation run."""
     n_force = min(len(aero_forces_E), len(clamp_arrays["raw_forces_E_N"]))
@@ -543,7 +713,7 @@ def compute_run_metrics(
         "stage_1_energy_metric": (
             "direct streamwise force-power from recorded aerodynamic/applied loads"
         ),
-        "stage_2_wbar_status": "not_yet_implemented_source_separated_postprocessor",
+        "stage_2_wbar_status": "computed" if wbar_arrays is not None else "disabled",
     }
     summary["clamp_force_yz_stats_N"] = clamp_statistics(
         clamp_forces_yz_E,
@@ -562,6 +732,30 @@ def compute_run_metrics(
             np.mean(delta_power_W)
         )
 
+    if wbar_arrays is not None:
+        wbar = wbar_arrays["wbar_source_to_receiver_mps"][:n]
+        delta_power_wbar = wbar_arrays["delta_power_wbar_source_to_receiver_W"][:n]
+        summary["last_period_mean_wbar_source_to_receiver_mps"] = period_average(
+            wbar,
+            steps_per_flap,
+        )
+        summary["last_period_mean_delta_power_wbar_source_to_receiver_W"] = (
+            period_average(delta_power_wbar, steps_per_flap)
+        )
+        summary["last_period_mean_wbar_source_to_receiver_mps"] = (
+            finite_array_to_jsonable(
+                summary["last_period_mean_wbar_source_to_receiver_mps"]
+            )
+        )
+        summary["last_period_mean_delta_power_wbar_source_to_receiver_W"] = (
+            finite_array_to_jsonable(
+                summary["last_period_mean_delta_power_wbar_source_to_receiver_W"]
+            )
+        )
+        summary["wbar_convention"] = (
+            "wbar_source_to_receiver[step, source_body_index, receiver_body_index]"
+        )
+
     return summary
 
 
@@ -574,10 +768,14 @@ def save_history_npz(
     euler_angles_deg: np.ndarray,
     aero_forces_E: np.ndarray,
     clamp_arrays: dict[str, np.ndarray],
+    extra_arrays: dict[str, np.ndarray] | None = None,
 ) -> Path:
     """Persist compact time-history data for later post-processing."""
     output_dir.mkdir(parents=True, exist_ok=True)
     save_path = output_dir / "history.npz"
+    arrays_to_save = dict(clamp_arrays)
+    if extra_arrays is not None:
+        arrays_to_save.update(extra_arrays)
     np.savez_compressed(
         save_path,
         times_s=times_s,
@@ -586,7 +784,7 @@ def save_history_npz(
         alphas_deg=alphas_deg,
         euler_angles_deg=euler_angles_deg,
         aero_forces_E_N=aero_forces_E,
-        **clamp_arrays,
+        **arrays_to_save,
     )
     return save_path
 
@@ -785,6 +983,7 @@ def run_streamwise_case(
     history_save_dir: Path | None,
     render_wake_movie: bool,
     baseline_power_W: np.ndarray | None = None,
+    compute_wbar: bool = False,
 ) -> dict[str, Any]:
     """Run one streamwise-only formation case and write diagnostics."""
     coupled_problem, coupled_solver, clamp_diagnostics = build_problem(
@@ -819,6 +1018,11 @@ def run_streamwise_case(
     )
     aero_forces_E = aerodynamic_forces_E_history(coupled_problem)
     clamp_arrays = clamp_diagnostics.history_arrays()
+    wbar_arrays = (
+        compute_source_separated_wbar_history(coupled_solver)
+        if compute_wbar and history_stride == 1
+        else None
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     history_path = save_history_npz(
@@ -830,6 +1034,7 @@ def run_streamwise_case(
         euler_angles_deg=euler_angles_deg,
         aero_forces_E=aero_forces_E,
         clamp_arrays=clamp_arrays,
+        extra_arrays=wbar_arrays,
     )
     summary = compute_run_metrics(
         x_over_span=x_over_span,
@@ -848,7 +1053,10 @@ def run_streamwise_case(
         aero_forces_E=aero_forces_E,
         clamp_arrays=clamp_arrays,
         baseline_power_W=baseline_power_W,
+        wbar_arrays=wbar_arrays,
     )
+    if compute_wbar and history_stride != 1:
+        summary["stage_2_wbar_status"] = "skipped_requires_history_stride_1"
     summary["history_npz"] = str(history_path)
     summary["diagnostic_plots"] = save_case_plots(
         output_dir=output_dir,
@@ -1183,6 +1391,7 @@ def run_sweep(
     baseline_y_over_span: float,
     include_x_perturbations: bool = False,
     x_perturbation_over_span: float = 0.1,
+    compute_wbar: bool = False,
 ) -> dict[str, Any]:
     """Run the requested streamwise stability and energy sweep."""
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1214,6 +1423,7 @@ def run_sweep(
             history_save_dir=None,
             render_wake_movie=False,
             baseline_power_W=None,
+            compute_wbar=compute_wbar,
         )
         baseline_power_W = np.asarray(
             baseline_summary["last_period_mean_applied_streamwise_power_W"],
@@ -1245,6 +1455,7 @@ def run_sweep(
                     history_save_dir=this_history_save_dir,
                     render_wake_movie=render_this,
                     baseline_power_W=baseline_power_W,
+                    compute_wbar=compute_wbar,
                 )
                 if render_this:
                     render_count += 1
@@ -1285,6 +1496,7 @@ def run_sweep(
         ),
         "include_x_perturbations": include_x_perturbations,
         "x_perturbation_over_span": x_perturbation_over_span,
+        "compute_wbar": compute_wbar,
         "case_summaries": summaries,
     }
     ff_utils.write_json(output_root / "sweep_summary.json", sweep_summary)
@@ -1401,6 +1613,15 @@ def parse_args() -> argparse.Namespace:
         default=0.1,
         help="Perturbation amplitude in X/B when perturbation cases are enabled.",
     )
+    parser.add_argument(
+        "--compute-wbar",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Compute source-separated lift-weighted Wbar and DeltaP=-L*Wbar "
+            "diagnostics. Requires retained full history."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1454,6 +1675,7 @@ def main() -> None:
         baseline_y_over_span=args.baseline_y_over_span,
         include_x_perturbations=args.include_x_perturbations,
         x_perturbation_over_span=args.x_perturbation_over_span,
+        compute_wbar=args.compute_wbar,
     )
 
 
