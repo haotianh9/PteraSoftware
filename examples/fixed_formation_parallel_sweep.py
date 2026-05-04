@@ -35,9 +35,14 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
     baseline_power_W = payload.get("baseline_power_W")
     if baseline_power_W is not None:
         baseline_power_W = np.asarray(baseline_power_W, dtype=float)
+    output_dir = Path(payload["output_dir"])
+    save_every_n_steps = payload["save_every_n_steps"]
+    history_save_dir = (
+        output_dir / "streamed_history" if save_every_n_steps is not None else None
+    )
 
     summary = sweep.run_streamwise_case(
-        output_dir=Path(payload["output_dir"]),
+        output_dir=output_dir,
         x_over_span=float(payload["x_over_span"]),
         y_over_span=float(payload["y_over_span"]),
         z_over_span=float(payload["z_over_span"]),
@@ -47,8 +52,8 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
         final_average_num_steps=int(payload["final_average_num_steps"]),
         show_progress=False,
         history_stride=int(payload["history_stride"]),
-        save_every_n_steps=payload["save_every_n_steps"],
-        history_save_dir=None,
+        save_every_n_steps=save_every_n_steps,
+        history_save_dir=history_save_dir,
         render_wake_movie=False,
         baseline_power_W=baseline_power_W,
         compute_wbar=bool(payload["compute_wbar"]),
@@ -108,8 +113,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-step-s", type=float, default=sweep.DEFAULT_TIME_STEP_S)
     parser.add_argument("--final-average-window-s", type=float, default=1.0)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--history-stride", type=int, default=1)
-    parser.add_argument("--save-every-n-steps", type=int, default=None)
+    parser.add_argument("--history-stride", type=int, default=24)
+    parser.add_argument("--save-every-n-steps", type=int, default=24)
     parser.add_argument(
         "--run-baseline", action=argparse.BooleanOptionalAction, default=True
     )
