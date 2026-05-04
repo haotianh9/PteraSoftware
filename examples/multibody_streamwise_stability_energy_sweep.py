@@ -1852,6 +1852,11 @@ def run_sweep(
     baseline_summary: dict[str, Any] | None = None
     if run_baseline:
         baseline_dir = output_root / "baseline_far_lateral"
+        baseline_history_save_dir = (
+            baseline_dir / "streamed_history"
+            if save_every_n_steps is not None
+            else None
+        )
         baseline_summary = run_streamwise_case(
             output_dir=baseline_dir,
             x_over_span=0.0,
@@ -1864,7 +1869,7 @@ def run_sweep(
             show_progress=show_progress,
             history_stride=history_stride,
             save_every_n_steps=save_every_n_steps,
-            history_save_dir=None,
+            history_save_dir=baseline_history_save_dir,
             render_wake_movie=False,
             baseline_power_W=None,
             compute_wbar=compute_wbar,
@@ -2066,13 +2071,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-stride",
         type=int,
-        default=1,
+        default=24,
         help="Retain full in-memory history every N steps.",
     )
     parser.add_argument(
         "--save-every-n-steps",
         type=int,
-        default=None,
+        default=24,
         help="Write compressed solver snapshots every N steps.",
     )
     parser.add_argument(
