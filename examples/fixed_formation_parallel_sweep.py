@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
+import os
 import sys
 from itertools import product
 from pathlib import Path
 from typing import Any
 
+import numba
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -32,6 +34,10 @@ DEFAULT_OUTPUT_ROOT = (
 
 def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
     """Run one fixed-formation case inside a worker process."""
+    numba_threads_per_worker = payload.get("numba_threads_per_worker")
+    if numba_threads_per_worker is not None:
+        numba.set_num_threads(int(numba_threads_per_worker))
+
     baseline_power_W = payload.get("baseline_power_W")
     if baseline_power_W is not None:
         baseline_power_W = np.asarray(baseline_power_W, dtype=float)
@@ -113,6 +119,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-step-s", type=float, default=sweep.DEFAULT_TIME_STEP_S)
     parser.add_argument("--final-average-window-s", type=float, default=1.0)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--numba-threads-per-worker",
+        type=int,
+        default=None,
+        help=(
+            "Numba threads per worker process. Defaults to "
+            "max(1, os.cpu_count() // workers)."
+        ),
+    )
+    parser.add_argument(
+        "--start-method",
+        choices=("spawn", "fork", "forkserver"),
+        default="spawn",
+        help=("Multiprocessing start method. 'spawn' is safest with threaded kernels."),
+    )
     parser.add_argument("--history-stride", type=int, default=24)
     parser.add_argument("--save-every-n-steps", type=int, default=24)
     parser.add_argument(
@@ -134,9 +155,24 @@ def main() -> None:
         raise ValueError("--workers must be at least 1.")
     if args.time_step_s <= 0.0:
         raise ValueError("--time-step-s must be positive.")
+    if args.numba_threads_per_worker is not None and args.numba_threads_per_worker < 1:
+        raise ValueError("--numba-threads-per-worker must be at least 1.")
 
     output_root = args.output_root
     output_root.mkdir(parents=True, exist_ok=True)
+
+    cpu_count = os.cpu_count() or 1
+    numba_threads_per_worker = args.numba_threads_per_worker
+    if numba_threads_per_worker is None:
+        numba_threads_per_worker = max(1, cpu_count // args.workers)
+    total_requested_threads = numba_threads_per_worker * args.workers
+    print(
+        "Parallel sweep configuration: "
+        f"workers={args.workers}, numba_threads_per_worker={numba_threads_per_worker}, "
+        f"total_requested_threads={total_requested_threads}, cpu_count={cpu_count}, "
+        f"start_method={args.start_method}",
+        flush=True,
+    )
 
     x_values = sweep.parse_float_tuple(args.x_over_span)
     y_values = sweep.parse_float_tuple(args.y_over_span)
@@ -167,6 +203,7 @@ def main() -> None:
                 "angle_of_attack_deg": args.angle_of_attack_deg,
                 "max_abs_x_over_span": args.max_abs_x_over_span,
                 "max_abs_speed_mps": args.max_abs_speed_mps,
+                "numba_threads_per_worker": numba_threads_per_worker,
                 "baseline_power_W": None,
                 "is_baseline": True,
             }
@@ -191,6 +228,7 @@ def main() -> None:
                 "angle_of_attack_deg": args.angle_of_attack_deg,
                 "max_abs_x_over_span": args.max_abs_x_over_span,
                 "max_abs_speed_mps": args.max_abs_speed_mps,
+                "numba_threads_per_worker": numba_threads_per_worker,
                 "baseline_power_W": None,
                 "is_baseline": False,
             }
@@ -198,7 +236,8 @@ def main() -> None:
 
     all_summaries: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
-    with mp.Pool(processes=args.workers, maxtasksperchild=1) as pool:
+    mp_context = mp.get_context(args.start_method)
+    with mp_context.Pool(processes=args.workers, maxtasksperchild=1) as pool:
         for index, summary in enumerate(
             pool.imap_unordered(_run_case, payloads), start=1
         ):
@@ -258,6 +297,10 @@ def main() -> None:
         "time_step_s": args.time_step_s,
         "final_average_window_s": args.final_average_window_s,
         "workers": args.workers,
+        "numba_threads_per_worker": numba_threads_per_worker,
+        "total_requested_threads": total_requested_threads,
+        "cpu_count": cpu_count,
+        "start_method": args.start_method,
         "baseline_summary": (
             None
             if baseline_summary is None
