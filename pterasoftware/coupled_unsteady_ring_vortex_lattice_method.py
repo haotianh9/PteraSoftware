@@ -204,6 +204,13 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         self._nextVelocity_E__E: np.ndarray = np.empty(0, dtype=float)
         self._nextOmegas_BP1__E: np.ndarray = np.empty(0, dtype=float)
 
+        self._current_aero_forces_E = np.zeros(3, dtype=float)
+        self._current_aero_moments_E_CgP1 = np.zeros(3, dtype=float)
+        self._current_net_forces_before_gating_E = np.zeros(3, dtype=float)
+        self._current_net_moments_before_gating_E_CgP1 = np.zeros(3, dtype=float)
+        self._current_forces_passed_to_mujoco_E = np.zeros(3, dtype=float)
+        self._current_moments_passed_to_mujoco_E_CgP1 = np.zeros(3, dtype=float)
+
         self.ran = False
 
     def run(
@@ -654,6 +661,12 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
             R_pas_E_to_BP1=self._nextR_pas_E_to_BP1.copy(),
             velocity_E__E=self._nextVelocity_E__E.copy(),
             omegas_BP1__E=self._nextOmegas_BP1__E.copy(),
+            aero_forces_E=self._current_aero_forces_E.copy(),
+            aero_moments_E_CgP1=self._current_aero_moments_E_CgP1.copy(),
+            net_forces_before_gating_E=self._current_net_forces_before_gating_E.copy(),
+            net_moments_before_gating_E_CgP1=self._current_net_moments_before_gating_E_CgP1.copy(),
+            forces_passed_to_mujoco_E=self._current_forces_passed_to_mujoco_E.copy(),
+            moments_passed_to_mujoco_E_CgP1=self._current_moments_passed_to_mujoco_E_CgP1.copy(),
             wake_strengths=self._current_wake_vortex_strengths.copy(),
             wake_ages=self._current_wake_vortex_ages.copy(),
             wake_rc0s=self._currentStackWakeRc0s.copy(),
@@ -1608,6 +1621,9 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         moments_W_CgP1 = self.current_airplane.moments_W_CgP1
         assert moments_W_CgP1 is not None
 
+        aerodynamic_forces_W = forces_W.copy()
+        aerodynamic_moments_W_CgP1 = moments_W_CgP1.copy()
+
         # Add the external wind x-axis force, specified in the CoupledOperatingPoint.
         forces_W = forces_W + np.array(
             [self.current_coupled_operating_point.externalFX_W, 0.0, 0.0], dtype=float
@@ -1632,6 +1648,9 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         forces_E = _transformations.apply_T_to_vectors(
             T_pas_W_CgP1_to_E_CgP1, forces_W, has_point=False
         )
+        self._current_aero_forces_E = _transformations.apply_T_to_vectors(
+            T_pas_W_CgP1_to_E_CgP1, aerodynamic_forces_W, has_point=False
+        )
 
         # Find the unit vector for the direction of gravitational acceleration (in
         # Earth axes).
@@ -1648,6 +1667,11 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
         moments_E_CgP1 = _transformations.apply_T_to_vectors(
             T_pas_W_CgP1_to_E_CgP1, moments_W_CgP1, has_point=True
         )
+        self._current_aero_moments_E_CgP1 = _transformations.apply_T_to_vectors(
+            T_pas_W_CgP1_to_E_CgP1, aerodynamic_moments_W_CgP1, has_point=True
+        )
+        self._current_net_forces_before_gating_E = forces_E.copy()
+        self._current_net_moments_before_gating_E_CgP1 = moments_E_CgP1.copy()
 
         # Apply the loads to the MuJoCo model, if this time step is beyond the
         # prescribed portion of the simulation.
@@ -1655,7 +1679,12 @@ class CoupledUnsteadyRingVortexLatticeMethodSolver:
             self._current_step
             >= self.coupled_unsteady_problem.coupled_movement.prescribed_num_steps
         ):
+            self._current_forces_passed_to_mujoco_E = forces_E.copy()
+            self._current_moments_passed_to_mujoco_E_CgP1 = moments_E_CgP1.copy()
             self.mujoco_model.apply_loads(forces_E, moments_E_CgP1)
+        else:
+            self._current_forces_passed_to_mujoco_E = np.zeros(3, dtype=float)
+            self._current_moments_passed_to_mujoco_E_CgP1 = np.zeros(3, dtype=float)
 
     def _process_new_states_from_mujoco(self) -> None:
         """Processes the updated state from MuJoCo and creates a new

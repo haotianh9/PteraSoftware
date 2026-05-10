@@ -162,6 +162,18 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
 
         self._current_total_forces_E = np.zeros((self.num_bodies, 3), dtype=float)
         self._current_total_moments_E_Cg = np.zeros((self.num_bodies, 3), dtype=float)
+        self._current_net_forces_before_gating_E = np.zeros(
+            (self.num_bodies, 3), dtype=float
+        )
+        self._current_net_moments_before_gating_E_Cg = np.zeros(
+            (self.num_bodies, 3), dtype=float
+        )
+        self._current_forces_passed_to_mujoco_E = np.zeros(
+            (self.num_bodies, 3), dtype=float
+        )
+        self._current_moments_passed_to_mujoco_E_Cg = np.zeros(
+            (self.num_bodies, 3), dtype=float
+        )
 
         self.ran = False
 
@@ -393,6 +405,10 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         )
         self._current_total_forces_E[:] = 0.0
         self._current_total_moments_E_Cg[:] = 0.0
+        self._current_net_forces_before_gating_E[:] = 0.0
+        self._current_net_moments_before_gating_E_Cg[:] = 0.0
+        self._current_forces_passed_to_mujoco_E[:] = 0.0
+        self._current_moments_passed_to_mujoco_E_Cg[:] = 0.0
 
     def _should_retain_step(self, step: int) -> bool:
         """Return whether this time step should be retained in memory."""
@@ -413,6 +429,12 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             R_pas_E_to_BPs=self._next_R_pas_E_to_BPs.copy(),
             velocities_E__E=self._next_velocities_E__E.copy(),
             omegas_BPs__E=self._next_omegas_BPs__E.copy(),
+            aero_forces_E=self._current_total_forces_E.copy(),
+            aero_moments_E_Cg=self._current_total_moments_E_Cg.copy(),
+            net_forces_before_gating_E=self._current_net_forces_before_gating_E.copy(),
+            net_moments_before_gating_E_Cg=self._current_net_moments_before_gating_E_Cg.copy(),
+            forces_passed_to_mujoco_E=self._current_forces_passed_to_mujoco_E.copy(),
+            moments_passed_to_mujoco_E_Cg=self._current_moments_passed_to_mujoco_E_Cg.copy(),
             wake_strengths=self._current_wake_vortex_strengths.copy(),
             wake_ages=self._current_wake_vortex_ages.copy(),
             wake_rc0s=self._currentStackWakeRc0s.copy(),
@@ -1133,16 +1155,25 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                     has_point=True,
                 )
 
+        self._current_net_forces_before_gating_E = forces_E.copy()
+        self._current_net_moments_before_gating_E_Cg = moments_E_Cg.copy()
+
         if (
             self._current_step
             >= self.coupled_unsteady_problem.coupled_movement.prescribed_num_steps
         ):
-            self.mujoco_model.apply_loads(forces_E=forces_E, moments_E_Cg=moments_E_Cg)
+            forces_to_apply = forces_E.copy()
+            moments_to_apply = moments_E_Cg.copy()
         else:
-            self.mujoco_model.apply_loads(
-                forces_E=np.zeros_like(forces_E),
-                moments_E_Cg=np.zeros_like(moments_E_Cg),
-            )
+            forces_to_apply = np.zeros_like(forces_E)
+            moments_to_apply = np.zeros_like(moments_E_Cg)
+
+        self._current_forces_passed_to_mujoco_E = forces_to_apply.copy()
+        self._current_moments_passed_to_mujoco_E_Cg = moments_to_apply.copy()
+        self.mujoco_model.apply_loads(
+            forces_E=forces_to_apply,
+            moments_E_Cg=moments_to_apply,
+        )
 
     def _process_new_states_from_mujoco(self) -> None:
         """Read the new MuJoCo states and create the next coupled operating points."""
