@@ -140,6 +140,27 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
         self.assertGreater(arrays["clamp_power_proxy_W"][0, 0], 0.0)
         self.assertGreater(arrays["clamp_power_proxy_W"][0, 1], 0.0)
 
+    def test_clamp_target_translates_while_preserving_formation(self) -> None:
+        """The free-wake clamp should move the formation through still air."""
+        diagnostics = sweep_case.StreamwiseClampDiagnostics(
+            mujoco_model=_FakeMuJoCoModel(),
+            target_positions_E_m=np.array(
+                [[0.0, 0.0, 0.0], [1.5, -0.75, 0.0]], dtype=float
+            ),
+            target_angles_deg=np.array([0.0, 5.0, 0.0]),
+            prescribed_streamwise_speed_mps=1.0,
+            delta_time_s=0.25,
+        )
+
+        diagnostics.state_step_index = 4
+        positions = diagnostics._current_target_positions_E_m()
+
+        np.testing.assert_allclose(positions[:, 0], np.array([1.0, 2.5]))
+        np.testing.assert_allclose(
+            positions[:, 1:], np.array([[0.0, 0.0], [-0.75, 0.0]])
+        )
+        self.assertAlmostEqual(positions[1, 0] - positions[0, 0], 1.5)
+
     def test_add_x_perturbations(self) -> None:
         """The helper should add +/- perturbations around every requested X/B."""
         self.assertEqual(

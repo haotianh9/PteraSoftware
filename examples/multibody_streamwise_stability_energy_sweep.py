@@ -170,6 +170,7 @@ class StreamwiseClampDiagnostics:
     target_positions_E_m: np.ndarray
     target_angles_deg: np.ndarray
     prescribed_streamwise_speed_mps: float = DEFAULT_STREAMWISE_SPEED_MPS
+    delta_time_s: float = DEFAULT_TIME_STEP_S
     span_m: float = FULL_SPAN_M
     max_abs_x_over_span: float = 20.0
     max_abs_speed_mps: float = 50.0
@@ -188,6 +189,8 @@ class StreamwiseClampDiagnostics:
             raise ValueError("target_angles_deg must have shape (3,).")
         if self.prescribed_streamwise_speed_mps <= 0.0:
             raise ValueError("prescribed_streamwise_speed_mps must be positive.")
+        if self.delta_time_s <= 0.0:
+            raise ValueError("delta_time_s must be positive.")
         if self.span_m <= 0.0:
             raise ValueError("span_m must be positive.")
         if self.max_abs_x_over_span <= 0.0:
@@ -195,12 +198,30 @@ class StreamwiseClampDiagnostics:
         if self.max_abs_speed_mps <= 0.0:
             raise ValueError("max_abs_speed_mps must be positive.")
 
+        self.initial_target_positions_E_m = self.target_positions_E_m.copy()
+        self.state_step_index = 0
+        self.streamed_load_history_dir: Path | None = None
+        self.streamed_load_save_every_n_steps: int | None = None
         self.raw_forces_E: list[np.ndarray] = []
         self.raw_moments_E_Cg: list[np.ndarray] = []
         self.projected_forces_E: list[np.ndarray] = []
         self.projected_moments_E_Cg: list[np.ndarray] = []
         self.preclamp_velocities_E: list[np.ndarray] = []
         self.preclamp_angular_rates_rad_s: list[np.ndarray] = []
+
+    def configure_load_streaming(
+        self,
+        history_save_dir: Path | None,
+        save_every_n_steps: int | None,
+    ) -> None:
+        """Configure lightweight force/torque snapshots for live monitoring."""
+        if history_save_dir is None or save_every_n_steps is None:
+            self.streamed_load_history_dir = None
+            self.streamed_load_save_every_n_steps = None
+            return
+        self.streamed_load_history_dir = Path(history_save_dir) / "clamp_loads"
+        self.streamed_load_history_dir.mkdir(parents=True, exist_ok=True)
+        self.streamed_load_save_every_n_steps = int(save_every_n_steps)
 
     def install(self) -> None:
         """Install load projection and post-step state clamping."""
@@ -221,20 +242,66 @@ class StreamwiseClampDiagnostics:
             self.raw_moments_E_Cg.append(raw_moments_E_Cg)
             self.projected_forces_E.append(projected_forces_E.copy())
             self.projected_moments_E_Cg.append(projected_moments_E_Cg.copy())
+            self._save_load_snapshot_if_requested(
+                step=len(self.raw_forces_E) - 1,
+                raw_forces_E=raw_forces_E,
+                raw_moments_E_Cg=raw_moments_E_Cg,
+                projected_forces_E=projected_forces_E,
+                projected_moments_E_Cg=projected_moments_E_Cg,
+            )
             original_apply_loads(projected_forces_E, projected_moments_E_Cg)
 
         def step_fixed_formation() -> None:
             original_step()
+            self.state_step_index += 1
             self.enforce_state(record=True)
 
         self.mujoco_model.apply_loads = apply_fixed_formation_loads
         self.mujoco_model.step = step_fixed_formation
+
+    def _current_target_positions_E_m(self) -> np.ndarray:
+        """Return the translating formation positions for the current state step."""
+        positions = self.initial_target_positions_E_m.copy()
+        positions[:, 0] += (
+            self.prescribed_streamwise_speed_mps
+            * self.delta_time_s
+            * self.state_step_index
+        )
+        return positions
+
+    def _save_load_snapshot_if_requested(
+        self,
+        step: int,
+        raw_forces_E: np.ndarray,
+        raw_moments_E_Cg: np.ndarray,
+        projected_forces_E: np.ndarray,
+        projected_moments_E_Cg: np.ndarray,
+    ) -> None:
+        """Save one clamp-load snapshot for live force/torque inspection."""
+        if (
+            self.streamed_load_history_dir is None
+            or self.streamed_load_save_every_n_steps is None
+        ):
+            return
+        if step % self.streamed_load_save_every_n_steps != 0:
+            return
+        np.savez_compressed(
+            self.streamed_load_history_dir / f"step_{step:06d}.npz",
+            step=np.array([step], dtype=int),
+            raw_forces_E_N=raw_forces_E.copy(),
+            raw_moments_E_Cg_Nm=raw_moments_E_Cg.copy(),
+            clamp_forces_E_N=-raw_forces_E.copy(),
+            clamp_moments_E_Cg_Nm=-raw_moments_E_Cg.copy(),
+            projected_forces_E_N=projected_forces_E.copy(),
+            projected_moments_E_Cg_Nm=projected_moments_E_Cg.copy(),
+        )
 
     def enforce_state(self, record: bool) -> None:
         """Clamp all rigid-body state components and record pre-clamp rates."""
         velocities_E = np.zeros((self.mujoco_model.num_bodies, 3), dtype=float)
         angular_rates_rad_s = np.zeros((self.mujoco_model.num_bodies, 3), dtype=float)
         target_quat_wxyz = _quat_from_izyx_angles_deg(self.target_angles_deg)
+        target_positions_E_m = self._current_target_positions_E_m()
 
         for body_index, qpos_adr in enumerate(self.mujoco_model.body_qposadrs):
             qvel_adr = int(self.mujoco_model.body_qveladrs[body_index])
@@ -245,9 +312,9 @@ class StreamwiseClampDiagnostics:
                 qvel_adr + 3 : qvel_adr + 6
             ]
 
-            self.mujoco_model.data.qpos[qpos_adr : qpos_adr + 3] = (
-                self.target_positions_E_m[body_index]
-            )
+            self.mujoco_model.data.qpos[qpos_adr : qpos_adr + 3] = target_positions_E_m[
+                body_index
+            ]
             self.mujoco_model.data.qpos[qpos_adr + 3 : qpos_adr + 7] = target_quat_wxyz
             self.mujoco_model.data.qvel[qvel_adr] = self.prescribed_streamwise_speed_mps
             self.mujoco_model.data.qvel[qvel_adr + 1 : qvel_adr + 6] = 0.0
@@ -354,6 +421,7 @@ def install_fixed_formation_projection(
     coupled_problem: ps.problems.MultiBodyCoupledUnsteadyProblem,
     target_positions_E_m: tuple[np.ndarray, np.ndarray],
     target_angles_deg: tuple[float, float, float],
+    delta_time_s: float,
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
 ) -> StreamwiseClampDiagnostics:
@@ -363,6 +431,7 @@ def install_fixed_formation_projection(
         target_positions_E_m=np.vstack(target_positions_E_m),
         target_angles_deg=np.array(target_angles_deg, dtype=float),
         prescribed_streamwise_speed_mps=DEFAULT_STREAMWISE_SPEED_MPS,
+        delta_time_s=delta_time_s,
         span_m=FULL_SPAN_M,
         max_abs_x_over_span=max_abs_x_over_span,
         max_abs_speed_mps=max_abs_speed_mps,
@@ -532,6 +601,7 @@ def build_problem(
         coupled_problem=coupled_problem,
         target_positions_E_m=initial_positions_E_E,
         target_angles_deg=(0.0, angle_of_attack_deg, 0.0),
+        delta_time_s=time_step_s,
         max_abs_x_over_span=max_abs_x_over_span,
         max_abs_speed_mps=max_abs_speed_mps,
     )
@@ -862,7 +932,9 @@ def compute_run_metrics(
         "aircraft_model": aircraft_model,
         "wake_model": "free" if not prescribed_wake else "prescribed",
         "prescribed_wake": bool(prescribed_wake),
-        "constraint_mode": "fixed_xyz_and_attitude_clamped_prescribed_streamwise_speed",
+        "constraint_mode": (
+            "fixed_relative_xyz_and_attitude_clamped_translating_streamwise_speed"
+        ),
         "max_abs_x_over_span_guard": max_abs_x_over_span,
         "max_abs_speed_mps_guard": max_abs_speed_mps,
         "x_over_span_initial": x_over_span,
@@ -1280,7 +1352,9 @@ def make_initial_collision_skipped_summary(
         "aircraft_model": aircraft_model,
         "wake_model": "free",
         "prescribed_wake": False,
-        "constraint_mode": "fixed_xyz_and_attitude_clamped_prescribed_streamwise_speed",
+        "constraint_mode": (
+            "fixed_relative_xyz_and_attitude_clamped_translating_streamwise_speed"
+        ),
         "max_abs_x_over_span_guard": max_abs_x_over_span,
         "max_abs_speed_mps_guard": max_abs_speed_mps,
         "x_over_span_initial": x_over_span,
@@ -1419,6 +1493,10 @@ def run_streamwise_case(
         angle_of_attack_deg=angle_of_attack_deg,
         max_abs_x_over_span=max_abs_x_over_span,
         max_abs_speed_mps=max_abs_speed_mps,
+    )
+    clamp_diagnostics.configure_load_streaming(
+        history_save_dir=history_save_dir,
+        save_every_n_steps=save_every_n_steps,
     )
     run_status = "ok"
     error_message: str | None = None
