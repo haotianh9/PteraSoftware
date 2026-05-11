@@ -100,16 +100,17 @@ def body_positions_from_paper_offsets(
     z_over_span: float,
     span_m: float = FULL_SPAN_M,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert paper coordinates to body initial positions.
+    """Convert formation coordinates to body initial positions.
 
-    The document uses X = x2 - x1, Y = y1 - y2, and Z = z1 - z2. With body 1 at the
-    origin, body 2 is therefore [X, -Y, -Z].
+    Body 1 is the front body and body 2 is the rear body. The formation coordinates
+    are X = x_front - x_rear, Y = y_rear - y_front, and Z = z_rear - z_front.
+    With the rear body at the origin, the front body is therefore [X, -Y, -Z].
     """
-    body_1_position_E_m = np.array([0.0, 0.0, 0.0], dtype=float)
-    body_2_position_E_m = span_m * np.array(
+    body_1_position_E_m = span_m * np.array(
         [x_over_span, -y_over_span, -z_over_span],
         dtype=float,
     )
+    body_2_position_E_m = np.array([0.0, 0.0, 0.0], dtype=float)
     return body_1_position_E_m, body_2_position_E_m
 
 
@@ -334,7 +335,7 @@ class StreamwiseClampDiagnostics:
             positions_x_m[body_index] = self.mujoco_model.data.qpos[qpos_adr]
             speeds_x_mps[body_index] = self.mujoco_model.data.qvel[qvel_adr]
 
-        relative_x_over_span = (positions_x_m[1] - positions_x_m[0]) / self.span_m
+        relative_x_over_span = (positions_x_m[0] - positions_x_m[1]) / self.span_m
         if not np.all(np.isfinite(speeds_x_mps)) or not np.isfinite(
             relative_x_over_span
         ):
@@ -904,10 +905,10 @@ def compute_run_metrics(
     clamp_moments_E_Cg = clamp_arrays["clamp_moments_E_Cg_Nm"][:n]
     clamp_power_proxy_W = clamp_arrays["clamp_power_proxy_W"][:n]
 
-    x_history_m = positions_sample[:, 1, 0] - positions_sample[:, 0, 0]
-    y_history_m = positions_sample[:, 0, 1] - positions_sample[:, 1, 1]
-    z_history_m = positions_sample[:, 0, 2] - positions_sample[:, 1, 2]
-    d_x_dt_mps = velocities_sample[:, 1, 0] - velocities_sample[:, 0, 0]
+    x_history_m = positions_sample[:, 0, 0] - positions_sample[:, 1, 0]
+    y_history_m = positions_sample[:, 1, 1] - positions_sample[:, 0, 1]
+    z_history_m = positions_sample[:, 1, 2] - positions_sample[:, 0, 2]
+    d_x_dt_mps = velocities_sample[:, 0, 0] - velocities_sample[:, 1, 0]
 
     required_thrust_E_N = clamp_forces_E[:, :, 0]
     final_window_required_thrust_E_N = final_window_average(
@@ -1137,10 +1138,10 @@ def save_separation_velocity_plot(
     """Save streamwise separation and velocity histories."""
     n = min(len(times_s), len(positions_E_E), len(velocities_E__E))
     x_axis_s = times_s[:n]
-    x_over_span = (positions_E_E[:n, 1, 0] - positions_E_E[:n, 0, 0]) / FULL_SPAN_M
-    y_over_span = (positions_E_E[:n, 0, 1] - positions_E_E[:n, 1, 1]) / FULL_SPAN_M
-    z_over_span = (positions_E_E[:n, 0, 2] - positions_E_E[:n, 1, 2]) / FULL_SPAN_M
-    d_x_dt = velocities_E__E[:n, 1, 0] - velocities_E__E[:n, 0, 0]
+    x_over_span = (positions_E_E[:n, 0, 0] - positions_E_E[:n, 1, 0]) / FULL_SPAN_M
+    y_over_span = (positions_E_E[:n, 1, 1] - positions_E_E[:n, 0, 1]) / FULL_SPAN_M
+    z_over_span = (positions_E_E[:n, 1, 2] - positions_E_E[:n, 0, 2]) / FULL_SPAN_M
+    d_x_dt = velocities_E__E[:n, 0, 0] - velocities_E__E[:n, 1, 0]
 
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     axes[0].plot(x_axis_s, x_over_span, color="black", label="X/B")
@@ -1151,8 +1152,8 @@ def save_separation_velocity_plot(
     axes[0].grid(True)
     axes[0].legend()
 
-    axes[1].plot(x_axis_s, velocities_E__E[:n, 0, 0], label="Body 1 Ux")
-    axes[1].plot(x_axis_s, velocities_E__E[:n, 1, 0], label="Body 2 Ux")
+    axes[1].plot(x_axis_s, velocities_E__E[:n, 0, 0], label="Body 1 front Ux")
+    axes[1].plot(x_axis_s, velocities_E__E[:n, 1, 0], label="Body 2 rear Ux")
     axes[1].set_ylabel("Ux (m/s)")
     axes[1].set_title("Streamwise Speeds")
     axes[1].grid(True)
@@ -1700,7 +1701,7 @@ def save_sweep_maps(
         (
             "thrust_difference_map.png",
             thrust_difference_values,
-            "Body 2 - Body 1 required Fx (N)",
+            "Body 2 rear - Body 1 front required Fx (N)",
         ),
         ("clamp_load_map.png", clamp_values, "Mean Fz clamp RMS (N)"),
     )
@@ -1822,7 +1823,7 @@ def save_theory_validation_9panel(
     z_slice = _nearest_value(z_values, 0.0)
 
     rows = (
-        ("body_0_power_metric_W", "Body 1 Power Metric"),
+        ("body_0_power_metric_W", "Body 1 Front Power Metric"),
         ("pair_power_metric_W", "Pair-Average Power Metric"),
         ("thrust_difference_N", "Required Thrust Difference"),
     )

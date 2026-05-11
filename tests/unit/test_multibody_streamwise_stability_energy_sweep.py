@@ -18,8 +18,8 @@ class _FakeMuJoCoModel:
 class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
     """Validate coordinate and clamp-diagnostic helper behavior."""
 
-    def test_body_positions_follow_paper_coordinate_convention(self) -> None:
-        """X=x2-x1, Y=y1-y2, Z=z1-z2 maps body 2 to [X, -Y, -Z]."""
+    def test_body_positions_follow_front_rear_convention(self) -> None:
+        """Body 1 is front; X=x1-x2, Y=y2-y1, Z=z2-z1."""
         body_1, body_2 = sweep_case.body_positions_from_paper_offsets(
             x_over_span=2.0,
             y_over_span=0.75,
@@ -27,8 +27,8 @@ class TestStreamwiseStabilityEnergyHelpers(unittest.TestCase):
             span_m=0.4,
         )
 
-        np.testing.assert_allclose(body_1, np.array([0.0, 0.0, 0.0]))
-        np.testing.assert_allclose(body_2, np.array([0.8, -0.3, 0.1]))
+        np.testing.assert_allclose(body_1, np.array([0.8, -0.3, 0.1]))
+        np.testing.assert_allclose(body_2, np.array([0.0, 0.0, 0.0]))
 
     def test_fixed_wing_theory_geometry_uses_regular_rectangular_numbers(self) -> None:
         """The formation-study fixed wing should use the clean requested geometry."""
