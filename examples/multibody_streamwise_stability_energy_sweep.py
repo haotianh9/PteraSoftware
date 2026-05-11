@@ -1185,16 +1185,17 @@ def save_power_plot(
     required_power_W = required_thrust_N * DEFAULT_STREAMWISE_SPEED_MPS
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
-    for body_index in range(2):
+    body_labels = ("Body 1 front", "Body 2 rear")
+    for body_index, body_label in enumerate(body_labels):
         axes[0].plot(
             x_axis_s,
             required_thrust_N[:, body_index],
-            label=f"Body {body_index}",
+            label=body_label,
         )
         axes[1].plot(
             x_axis_s,
             required_power_W[:, body_index],
-            label=f"Body {body_index}",
+            label=body_label,
         )
     axes[0].set_ylabel("Required Fx (N)")
     axes[0].set_title("Streamwise Clamp Reaction / Required Thrust")
@@ -1226,40 +1227,41 @@ def save_clamp_load_plot(
     x_axis_s = times_s[:n]
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    for body_index in range(2):
+    body_labels = ("Body 1 front", "Body 2 rear")
+    for body_index, body_label in enumerate(body_labels):
         axes[0].plot(
             x_axis_s,
             clamp_forces_E[:n, body_index, 0],
-            label=f"Body {body_index} Fx",
+            label=f"{body_label} Fx",
         )
         axes[0].plot(
             x_axis_s,
             clamp_forces_E[:n, body_index, 1],
             linestyle="--",
-            label=f"Body {body_index} Fy",
+            label=f"{body_label} Fy",
         )
         axes[0].plot(
             x_axis_s,
             clamp_forces_E[:n, body_index, 2],
             linestyle=":",
-            label=f"Body {body_index} Fz",
+            label=f"{body_label} Fz",
         )
         axes[1].plot(
             x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 0],
-            label=f"Body {body_index} Mx",
+            label=f"{body_label} Mx",
         )
         axes[1].plot(
             x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 1],
             linestyle="--",
-            label=f"Body {body_index} My",
+            label=f"{body_label} My",
         )
         axes[1].plot(
             x_axis_s,
             clamp_moments_E_Cg[:n, body_index, 2],
             linestyle=":",
-            label=f"Body {body_index} Mz",
+            label=f"{body_label} Mz",
         )
 
     axes[0].set_ylabel("Clamp Force (N)")
