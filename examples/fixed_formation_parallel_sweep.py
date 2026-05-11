@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing as mp
 import os
+import shutil
 import sys
 from itertools import product
 from pathlib import Path
@@ -42,6 +44,8 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
     if baseline_power_W is not None:
         baseline_power_W = np.asarray(baseline_power_W, dtype=float)
     output_dir = Path(payload["output_dir"])
+    if bool(payload.get("clean_output_dir", False)) and output_dir.exists():
+        shutil.rmtree(output_dir)
     save_every_n_steps = payload["save_every_n_steps"]
     history_save_dir = (
         output_dir / "streamed_history" if save_every_n_steps is not None else None
@@ -70,6 +74,21 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
     )
     summary["_parallel_output_dir"] = payload["output_dir"]
     summary["_parallel_is_baseline"] = bool(payload.get("is_baseline", False))
+    return summary
+
+
+def _load_existing_summary(
+    output_dir: Path,
+    *,
+    is_baseline: bool,
+) -> dict[str, Any] | None:
+    """Load a completed case summary for resumable sweeps."""
+    summary_path = output_dir / "summary.json"
+    if not summary_path.exists():
+        return None
+    summary = json.loads(summary_path.read_text())
+    summary["_parallel_output_dir"] = str(output_dir)
+    summary["_parallel_is_baseline"] = bool(is_baseline)
     return summary
 
 
@@ -143,6 +162,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--compute-wbar", action=argparse.BooleanOptionalAction, default=False
     )
+    parser.add_argument(
+        "--resume-skip-existing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Reuse case directories that already contain summary.json.",
+    )
+    parser.add_argument(
+        "--clean-incomplete",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove incomplete per-case output directories before rerunning them.",
+    )
     parser.add_argument("--max-abs-x-over-span", type=float, default=20.0)
     parser.add_argument("--max-abs-speed-mps", type=float, default=50.0)
     return parser.parse_args()
@@ -185,8 +216,23 @@ def main() -> None:
     )
 
     payloads: list[dict[str, Any]] = []
+    cached_summaries: list[dict[str, Any]] = []
+
+    def add_payload(payload: dict[str, Any]) -> None:
+        output_dir = Path(payload["output_dir"])
+        if args.resume_skip_existing:
+            existing_summary = _load_existing_summary(
+                output_dir,
+                is_baseline=bool(payload.get("is_baseline", False)),
+            )
+            if existing_summary is not None:
+                cached_summaries.append(existing_summary)
+                return
+        payload["clean_output_dir"] = bool(args.clean_incomplete)
+        payloads.append(payload)
+
     if args.run_baseline:
-        payloads.append(
+        add_payload(
             {
                 "output_dir": str(output_root / "baseline_far_lateral"),
                 "x_over_span": 0.0,
@@ -209,7 +255,7 @@ def main() -> None:
             }
         )
     for z_over_span, y_over_span, x_over_span in product(z_values, y_values, x_values):
-        payloads.append(
+        add_payload(
             {
                 "output_dir": str(
                     output_root / sweep.run_label(x_over_span, y_over_span, z_over_span)
@@ -234,24 +280,36 @@ def main() -> None:
             }
         )
 
-    all_summaries: list[dict[str, Any]] = []
-    summaries: list[dict[str, Any]] = []
+    all_summaries: list[dict[str, Any]] = list(cached_summaries)
+    summaries: list[dict[str, Any]] = [
+        summary
+        for summary in cached_summaries
+        if not bool(summary.get("_parallel_is_baseline", False))
+    ]
+    if cached_summaries:
+        print(
+            f"Reusing {len(cached_summaries)} existing completed summaries.",
+            flush=True,
+        )
+    total_payload_count = len(cached_summaries) + len(payloads)
     mp_context = mp.get_context(args.start_method)
-    with mp_context.Pool(processes=args.workers, maxtasksperchild=1) as pool:
-        for index, summary in enumerate(
-            pool.imap_unordered(_run_case, payloads), start=1
-        ):
-            all_summaries.append(summary)
-            if not summary["_parallel_is_baseline"]:
-                summaries.append(summary)
-            print(
-                f"[{index}/{len(payloads)}] "
-                f"X/B={summary['x_over_span_initial']:.3g}, "
-                f"Y/B={summary['y_over_span_prescribed']:.3g}, "
-                f"Z/B={summary['z_over_span_prescribed']:.3g}: "
-                f"{summary['run_status']}",
-                flush=True,
-            )
+    if payloads:
+        with mp_context.Pool(processes=args.workers, maxtasksperchild=1) as pool:
+            for index, summary in enumerate(
+                pool.imap_unordered(_run_case, payloads),
+                start=len(cached_summaries) + 1,
+            ):
+                all_summaries.append(summary)
+                if not summary["_parallel_is_baseline"]:
+                    summaries.append(summary)
+                print(
+                    f"[{index}/{total_payload_count}] "
+                    f"X/B={summary['x_over_span_initial']:.3g}, "
+                    f"Y/B={summary['y_over_span_prescribed']:.3g}, "
+                    f"Z/B={summary['z_over_span_prescribed']:.3g}: "
+                    f"{summary['run_status']}",
+                    flush=True,
+                )
 
     baseline_summary = next(
         (summary for summary in all_summaries if summary["_parallel_is_baseline"]),
