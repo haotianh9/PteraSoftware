@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -272,6 +273,71 @@ def build_summary(
     return summary
 
 
+def extract_load_histories_wind_axes(
+    coupled_solver: ps.coupled_unsteady_ring_vortex_lattice_method.CoupledUnsteadyRingVortexLatticeMethodSolver,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Extract aerodynamic force/torque histories from coupled steady-step snapshots."""
+    forces_w_list: list[np.ndarray] = []
+    moments_w_cg_list: list[np.ndarray] = []
+    for steady_problem in coupled_solver.coupled_steady_problems:
+        if steady_problem is None:
+            continue
+        airplane = steady_problem.airplane
+        if airplane.forces_W is None or airplane.moments_W_CgP1 is None:
+            continue
+        forces_w_list.append(np.asarray(airplane.forces_W, dtype=float))
+        moments_w_cg_list.append(np.asarray(airplane.moments_W_CgP1, dtype=float))
+
+    if not forces_w_list or not moments_w_cg_list:
+        return np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=float)
+
+    num_steps = min(len(forces_w_list), len(moments_w_cg_list))
+    forces_w = np.vstack(forces_w_list[:num_steps])
+    moments_w_cg = np.vstack(moments_w_cg_list[:num_steps])
+    return forces_w, moments_w_cg
+
+
+def save_force_torque_history_plot(
+    x_values: np.ndarray,
+    forces_w: np.ndarray,
+    moments_w_cg: np.ndarray,
+    save_path: Path,
+) -> Path | None:
+    """Save aerodynamic force and torque histories in wind axes."""
+    num_steps = min(len(x_values), len(forces_w), len(moments_w_cg))
+    if num_steps <= 0:
+        return None
+
+    x_values = x_values[:num_steps]
+    forces_w = forces_w[:num_steps]
+    moments_w_cg = moments_w_cg[:num_steps]
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+    axes[0].plot(x_values, forces_w[:, 0], label="Fx")
+    axes[0].plot(x_values, forces_w[:, 1], label="Fy")
+    axes[0].plot(x_values, forces_w[:, 2], label="Fz")
+    axes[0].set_ylabel("Force (N)")
+    axes[0].set_title("Aerodynamic Force Components (Wind Axes)")
+    axes[0].grid(True)
+    axes[0].legend()
+
+    axes[1].plot(x_values, moments_w_cg[:, 0], label="Mx")
+    axes[1].plot(x_values, moments_w_cg[:, 1], label="My")
+    axes[1].plot(x_values, moments_w_cg[:, 2], label="Mz")
+    axes[1].set_ylabel("Torque (N m)")
+    axes[1].set_xlabel("Time / Flapping Period")
+    axes[1].set_title("Aerodynamic Torque Components About CG (Wind Axes)")
+    axes[1].grid(True)
+    axes[1].legend()
+
+    fig.suptitle("Flapping Forward Aerodynamic Force/Torque History")
+    fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    return save_path
+
+
 def run_case(
     output_dir: Path,
     prescribed_num_steps: int,
@@ -318,19 +384,35 @@ def run_case(
         x_label="Time / Flapping Period",
         title="Flapping Forward Free-Flight Case",
     )
+    forces_w, moments_w_cg = extract_load_histories_wind_axes(coupled_solver)
+    force_torque_plot_path = save_force_torque_history_plot(
+        x_values=times_over_period,
+        forces_w=forces_w,
+        moments_w_cg=moments_w_cg,
+        save_path=output_dir / "force_torque_history.png",
+    )
+
+    summary = build_summary(
+        coupled_problem=coupled_problem,
+        coupled_solver=coupled_solver,
+        steps_per_flap=steps_per_flap,
+        prescribed_wake=prescribed_wake,
+    )
+    if force_torque_plot_path is not None:
+        summary["force_torque_history_plot"] = str(force_torque_plot_path)
+        summary["force_torque_history_num_steps"] = int(
+            min(len(forces_w), len(moments_w_cg), len(times_over_period))
+        )
 
     summary_path = ff_utils.write_json(
         output_dir / "summary.json",
-        build_summary(
-            coupled_problem=coupled_problem,
-            coupled_solver=coupled_solver,
-            steps_per_flap=steps_per_flap,
-            prescribed_wake=prescribed_wake,
-        ),
+        summary,
     )
 
     print(f"Saved summary to: {summary_path}")
     print(f"Saved velocity plot to: {plot_path}")
+    if force_torque_plot_path is not None:
+        print(f"Saved force/torque plot to: {force_torque_plot_path}")
 
     if animate:
         webp_path, mp4_path = ff_utils.save_animation_bundle(
