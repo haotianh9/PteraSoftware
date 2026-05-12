@@ -153,6 +153,15 @@ def parse_args() -> argparse.Namespace:
         default="spawn",
         help=("Multiprocessing start method. 'spawn' is safest with threaded kernels."),
     )
+    parser.add_argument(
+        "--max-tasks-per-child",
+        type=int,
+        default=1,
+        help=(
+            "Maximum cases before a worker process is recycled. Use 0 to reuse "
+            "workers for the full sweep after Numba kernels are warmed."
+        ),
+    )
     parser.add_argument("--history-stride", type=int, default=24)
     parser.add_argument("--save-every-n-steps", type=int, default=24)
     parser.add_argument(
@@ -188,6 +197,8 @@ def main() -> None:
         raise ValueError("--time-step-s must be positive.")
     if args.numba_threads_per_worker is not None and args.numba_threads_per_worker < 1:
         raise ValueError("--numba-threads-per-worker must be at least 1.")
+    if args.max_tasks_per_child < 0:
+        raise ValueError("--max-tasks-per-child must be non-negative.")
 
     output_root = args.output_root
     output_root.mkdir(parents=True, exist_ok=True)
@@ -201,7 +212,8 @@ def main() -> None:
         "Parallel sweep configuration: "
         f"workers={args.workers}, numba_threads_per_worker={numba_threads_per_worker}, "
         f"total_requested_threads={total_requested_threads}, cpu_count={cpu_count}, "
-        f"start_method={args.start_method}",
+        f"start_method={args.start_method}, "
+        f"max_tasks_per_child={args.max_tasks_per_child}",
         flush=True,
     )
 
@@ -294,7 +306,13 @@ def main() -> None:
     total_payload_count = len(cached_summaries) + len(payloads)
     mp_context = mp.get_context(args.start_method)
     if payloads:
-        with mp_context.Pool(processes=args.workers, maxtasksperchild=1) as pool:
+        max_tasks_per_child = (
+            None if args.max_tasks_per_child == 0 else args.max_tasks_per_child
+        )
+        with mp_context.Pool(
+            processes=args.workers,
+            maxtasksperchild=max_tasks_per_child,
+        ) as pool:
             for index, summary in enumerate(
                 pool.imap_unordered(_run_case, payloads),
                 start=len(cached_summaries) + 1,
@@ -356,6 +374,7 @@ def main() -> None:
         "final_average_window_s": args.final_average_window_s,
         "workers": args.workers,
         "numba_threads_per_worker": numba_threads_per_worker,
+        "max_tasks_per_child": args.max_tasks_per_child,
         "total_requested_threads": total_requested_threads,
         "cpu_count": cpu_count,
         "start_method": args.start_method,
