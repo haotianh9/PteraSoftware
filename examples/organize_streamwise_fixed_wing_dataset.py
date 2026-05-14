@@ -450,7 +450,6 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         (15.0, 0.0, "AOA 15 deg, Z/B = 0"),
     )
     derivative_payload = []
-    all_values = []
     for aoa, z_over_span, label in conditions:
         x_values, y_values, thrust_grid = _grid_from_rows(
             rows, aoa, z_over_span, "rear_thrust_N"
@@ -463,7 +462,6 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                     thrust_grid[row_index, valid], x_values[valid]
                 )
         derivative_payload.append((x_values, y_values, derivative_grid, label))
-        all_values.extend(derivative_grid[np.isfinite(derivative_grid)])
 
     analytic_x_values, analytic_y_values, analytic_single_thrust_grid = _grid_from_rows(
         rows,
@@ -500,28 +498,22 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 "Analytical reference\nAOA-independent, Z/B = 0",
             )
         )
-        all_values.extend(
-            analytic_derivative_grid[np.isfinite(analytic_derivative_grid)]
-        )
-
-    all_values_array = np.asarray(all_values, dtype=float)
-    vmax = max(1.0e-12, float(np.nanmax(np.abs(all_values_array))))
-    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), constrained_layout=True)
     flat_axes = axes.ravel()
-    active_axes = []
     mesh = None
     for ax, (x_values, y_values, grid, label) in zip(flat_axes, derivative_payload):
+        finite_values = grid[np.isfinite(grid)]
+        panel_vmax = max(1.0e-12, float(np.nanmax(np.abs(finite_values))))
+        panel_norm = TwoSlopeNorm(vmin=-panel_vmax, vcenter=0.0, vmax=panel_vmax)
         mesh = ax.pcolormesh(
             _edges(x_values),
             _edges(y_values),
             grid,
             shading="auto",
             cmap="RdBu_r",
-            norm=norm,
+            norm=panel_norm,
         )
-        active_axes.append(ax)
         if np.any(np.isfinite(grid)) and np.nanmin(grid) <= 0.0 <= np.nanmax(grid):
             ax.contour(
                 x_values,
@@ -536,13 +528,13 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         ax.set_xlabel("X/B")
         ax.set_ylabel("Y/B")
         ax.grid(False)
+        cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
+        cbar.set_label("dT / d(X/B) (N)")
     for ax in flat_axes[len(derivative_payload) :]:
         ax.axis("off")
     if mesh is None:
         raise RuntimeError("No data available for derivative maps.")
-    cbar = fig.colorbar(mesh, ax=active_axes, fraction=0.025, pad=0.015)
-    cbar.set_label("Rear dT / d(X/B) (N)")
-    fig.suptitle("Rear-Wing Streamwise Thrust Gradient")
+    fig.suptitle("Rear-Wing Streamwise Thrust Gradient (Panel-Wise Color Scales)")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
