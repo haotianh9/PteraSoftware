@@ -1,14 +1,13 @@
-"""Plot simulation AOA slices with one AOA-independent analytical reference.
+"""Plot simulation AOA slices with one analytical horseshoe reference.
 
-The analytical panel is intentionally shown only once. The lightweight model used here
-does not include an angle-of-attack-dependent circulation law. It mirrors the
-``Wbar_model`` parameters in
-``/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/``
-and converts power change to thrust change with ``Delta T = Delta P / U``.
+The analytical panel is intentionally shown only once. It uses the in-repo
+constant-circulation horseshoe/tip-vortex model implemented in
+``lifting_line_flat_wake_stability.py`` and converts power change to thrust change
+with ``Delta T = Delta P / U``.
 
 The comparison figure plots the same quantity in all panels:
-``T_rear / T_single``.  The analytical panel uses the math-model drag scale as its
-single-wing baseline, not the simulation's bird-scale thrust.
+``T_rear / T_single``.  The analytical panel uses the matching single-wing
+baseline thrust from the curated simulation table.
 """
 
 from __future__ import annotations
@@ -20,6 +19,11 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
+
+try:
+    from examples import lifting_line_flat_wake_stability as flat_wake
+except ImportError:  # pragma: no cover - supports direct script execution
+    import lifting_line_flat_wake_stability as flat_wake
 
 DEFAULT_OUTPUT_DIR = (
     Path(__file__).resolve().parents[1]
@@ -38,25 +42,6 @@ SPAN_M = 1.0
 SEMI_SPAN_M = SPAN_M / 2.0
 ROOT_CHORD_M = 0.1
 
-# Analytical reference parameters mirrored from lifting_line_streamwise_stability.py.
-ANALYTIC_MODEL_SOURCE = (
-    "/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/"
-    "lifting_line_streamwise_stability.py"
-)
-ANALYTIC_MASS_KG = 1.0
-ANALYTIC_GRAVITY_MPS2 = 9.81
-ANALYTIC_LIFT_N = ANALYTIC_MASS_KG * ANALYTIC_GRAVITY_MPS2
-ANALYTIC_REFERENCE_SPEED_MPS = 1.0
-ANALYTIC_DB_PRIME_N_PER_MPS = 1.0
-ANALYTIC_BASELINE_THRUST_N = ANALYTIC_DB_PRIME_N_PER_MPS * ANALYTIC_REFERENCE_SPEED_MPS
-WAKE_UPWASH_AMPLITUDE_OVER_U = 0.15
-WAKE_X_GATE_OVER_SPAN = 0.25
-WAKE_X_RISE_OVER_SPAN = 1.0
-WAKE_X_DECAY_OVER_SPAN = 8.0
-WAKE_Y_LOBE_OVER_SPAN = 0.65
-WAKE_Y_WIDTH_OVER_SPAN = 0.25
-WAKE_Z_WIDTH_OVER_SPAN = 0.35
-
 # Keep X/B=7 now that the long convergence reruns are in the curated dataset.
 X_MAX_OVER_SPAN = 7.0
 SIMULATION_CONDITIONS: tuple[tuple[float, float, str], ...] = (
@@ -67,6 +52,11 @@ SIMULATION_CONDITIONS: tuple[tuple[float, float, str], ...] = (
 )
 ANALYTIC_REFERENCE_AOA_DEG = 5.0
 ANALYTIC_REFERENCE_Z_OVER_SPAN = 0.0
+ANALYTIC_PARAMS = flat_wake.FlatWakeParams(
+    span_m=SPAN_M,
+    chord_m=ROOT_CHORD_M,
+    aoa_deg=ANALYTIC_REFERENCE_AOA_DEG,
+)
 
 
 def _apply_constant_style() -> None:
@@ -105,27 +95,14 @@ def analytical_wbar_model_mps(
     y_over_span: float,
     z_over_span: float,
 ) -> float:
-    """Evaluate the analytical lift-weighted upwash model from math_models."""
-    x_m = x_over_span * SPAN_M
-    y_m = y_over_span * SPAN_M
-    z_m = z_over_span * SPAN_M
-    upwash_amplitude_mps = WAKE_UPWASH_AMPLITUDE_OVER_U * ANALYTIC_REFERENCE_SPEED_MPS
-    x_gate_m = WAKE_X_GATE_OVER_SPAN * SPAN_M
-    x_rise_m = WAKE_X_RISE_OVER_SPAN * SPAN_M
-    x_decay_m = WAKE_X_DECAY_OVER_SPAN * SPAN_M
-    y_lobe_m = WAKE_Y_LOBE_OVER_SPAN * SPAN_M
-    y_width_m = WAKE_Y_WIDTH_OVER_SPAN * SPAN_M
-    z_width_m = WAKE_Z_WIDTH_OVER_SPAN * SPAN_M
-
-    gate = 1.0 / (1.0 + np.exp(-x_m / x_gate_m))
-    downstream_x_m = max(x_m, 0.0)
-    streamwise_shape = (1.0 - np.exp(-downstream_x_m / x_rise_m)) * np.exp(
-        -downstream_x_m / x_decay_m
-    )
-    lateral_shape = np.exp(-(((abs(y_m) - y_lobe_m) / y_width_m) ** 2))
-    vertical_shape = np.exp(-((z_m / z_width_m) ** 2))
+    """Evaluate the analytical lift-weighted upwash from the horseshoe model."""
     return float(
-        upwash_amplitude_mps * gate * streamwise_shape * lateral_shape * vertical_shape
+        flat_wake.lift_weighted_wbar_mps(
+            x_over_span * SPAN_M,
+            y_over_span * SPAN_M,
+            z_over_span * SPAN_M,
+            ANALYTIC_PARAMS,
+        )
     )
 
 
@@ -140,23 +117,24 @@ def analytical_delta_thrust_n(
         y_over_span=y_over_span,
         z_over_span=z_over_span,
     )
-    return float(-(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps)
+    return float(flat_wake.thrust_change_n(wbar_mps, ANALYTIC_PARAMS))
 
 
 def analytical_rear_thrust_ratio(
     x_over_span: float,
     y_over_span: float,
     z_over_span: float,
+    baseline_thrust_n: float | None = None,
 ) -> float:
-    """Return analytical required-thrust ratio using the model baseline drag."""
+    """Return analytical required-thrust ratio using the selected baseline."""
+    if baseline_thrust_n is None:
+        baseline_thrust_n = flat_wake.baseline_thrust_n(ANALYTIC_PARAMS)
     delta_thrust_n = analytical_delta_thrust_n(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
         z_over_span=z_over_span,
     )
-    return float(
-        (ANALYTIC_BASELINE_THRUST_N + delta_thrust_n) / ANALYTIC_BASELINE_THRUST_N
-    )
+    return float((baseline_thrust_n + delta_thrust_n) / baseline_thrust_n)
 
 
 def _condition_mask(data: np.ndarray, aoa_deg: float, z_over_span: float) -> np.ndarray:
@@ -208,6 +186,7 @@ def _analytic_reference_grid(
 
     x_values = np.array(sorted(np.unique(data["xB"][subset_indices])), dtype=float)
     y_values = np.array(sorted(np.unique(data["yB"][subset_indices])), dtype=float)
+    baseline_thrust_n = float(np.mean(data["single_body_thrust_N"][subset_indices]))
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
 
     for y_index, y_over_span in enumerate(y_values):
@@ -216,6 +195,7 @@ def _analytic_reference_grid(
                 x_over_span=float(x_over_span),
                 y_over_span=float(y_over_span),
                 z_over_span=ANALYTIC_REFERENCE_Z_OVER_SPAN,
+                baseline_thrust_n=baseline_thrust_n,
             )
 
     return x_values, y_values, grid
@@ -226,17 +206,38 @@ def analytical_rear_thrust_grid(
     y_values: np.ndarray,
     *,
     z_over_span: float,
+    baseline_thrust_n: float | None = None,
 ) -> np.ndarray:
     """Return analytical rear required thrust on an X/B-Y/B grid."""
+    if baseline_thrust_n is None:
+        baseline_thrust_n = flat_wake.baseline_thrust_n(ANALYTIC_PARAMS)
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
+    for y_index, y_over_span in enumerate(y_values):
+        for x_index, x_over_span in enumerate(x_values):
+            grid[y_index, x_index] = baseline_thrust_n + analytical_delta_thrust_n(
+                x_over_span=float(x_over_span),
+                y_over_span=float(y_over_span),
+                z_over_span=float(z_over_span),
+            )
+    return grid
+
+
+def analytical_rear_dthrust_dxb_grid(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    *,
+    z_over_span: float,
+) -> np.ndarray:
+    """Return analytical rear dT/d(X/B) from the horseshoe dWbar/dX."""
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
             grid[y_index, x_index] = (
-                ANALYTIC_BASELINE_THRUST_N
-                + analytical_delta_thrust_n(
-                    x_over_span=float(x_over_span),
-                    y_over_span=float(y_over_span),
-                    z_over_span=float(z_over_span),
+                flat_wake.lift_weighted_thrust_gradient_per_x_over_span_n(
+                    float(x_over_span) * SPAN_M,
+                    float(y_over_span) * SPAN_M,
+                    float(z_over_span) * SPAN_M,
+                    ANALYTIC_PARAMS,
                 )
             )
     return grid
@@ -244,40 +245,31 @@ def analytical_rear_thrust_grid(
 
 def analytical_model_parameters() -> dict:
     """Return the parameter choices used by the analytical reference model."""
-    parameters = {
-        "span_m": SPAN_M,
-        "semispan_m": SEMI_SPAN_M,
-        "root_chord_m": ROOT_CHORD_M,
-        "source_file": ANALYTIC_MODEL_SOURCE,
-        "mass_kg": ANALYTIC_MASS_KG,
-        "gravity_mps2": ANALYTIC_GRAVITY_MPS2,
-        "lift_n": ANALYTIC_LIFT_N,
-        "reference_speed_mps": ANALYTIC_REFERENCE_SPEED_MPS,
-        "db_prime_n_per_mps": ANALYTIC_DB_PRIME_N_PER_MPS,
-        "baseline_thrust_n": ANALYTIC_BASELINE_THRUST_N,
-        "baseline_thrust_choice": "D_b(Ubar)=Db_prime*Ubar on the math-model scale",
-        "w0_over_u": WAKE_UPWASH_AMPLITUDE_OVER_U,
-        "x_gate_over_span": WAKE_X_GATE_OVER_SPAN,
-        "x_rise_over_span": WAKE_X_RISE_OVER_SPAN,
-        "x_decay_over_span": WAKE_X_DECAY_OVER_SPAN,
-        "y_lobe_over_span": WAKE_Y_LOBE_OVER_SPAN,
-        "y_width_over_span": WAKE_Y_WIDTH_OVER_SPAN,
-        "z_width_over_span": WAKE_Z_WIDTH_OVER_SPAN,
-        "wake_model": (
-            "direct lift-weighted Wbar_model: downstream logistic gate, "
-            "streamwise rise/decay, symmetric lateral upwash lobes, vertical decay"
-        ),
-        "wake_model_sign_limitation": (
-            "The external Wbar_model is nonnegative by construction, so the "
-            "analytical T_rear/T_single panel can show thrust saving only; red "
-            "T/T_single > 1 regions require adding a signed downwash term or using "
-            "a different analytical wake closure."
-        ),
-        "power_to_thrust_relation": "Delta T = Delta P/U = -(L/U) * Wbar",
-        "plotted_analytical_quantity": "T_rear/T_single using the model baseline thrust",
-        "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
-        "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
-    }
+    parameters = flat_wake.model_parameters_dict(ANALYTIC_PARAMS)
+    parameters.update(
+        {
+            "source_file": "examples/lifting_line_flat_wake_stability.py",
+            "baseline_thrust_choice": (
+                "Analytical comparison ratios use the matching simulation "
+                "single-wing baseline from the curated CSV."
+            ),
+            "wake_model": (
+                "constant-circulation full horseshoe vortex plus tip-vortex "
+                "point-receiver stability boundary"
+            ),
+        }
+    )
+    parameters.update(
+        {
+            "power_to_thrust_relation": "Delta T = Delta P/U = -(L/U) * Wbar",
+            "plotted_analytical_quantity": (
+                "T_rear/T_single using the same single-wing normalization as "
+                "the simulation panels"
+            ),
+            "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
+            "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
+        }
+    )
     return parameters
 
 
@@ -377,14 +369,17 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         analytic_y,
         analytic_grid,
         _ratio_norm_from_grid(analytic_grid),
-        ("Single analytical reference\n" "$T/T_0=1-(L/(U T_0))\\bar W$, Z/B = 0"),
+        (
+            "Single analytical horseshoe reference\n"
+            "$T/T_{single}=1+\\Delta T/T_{single}$, Z/B = 0"
+        ),
     )
     cbar = fig.colorbar(mesh, ax=analytic_ax, fraction=0.046, pad=0.025)
     cbar.set_label("$T_{rear}/T_{single}$")
     analytic_ax.text(
         0.02,
         0.02,
-        "Analytical baseline: T_single = D_b(Ubar) = 1 N.",
+        "Analytical reference: full horseshoe wake, AOA 5 deg.",
         transform=analytic_ax.transAxes,
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
@@ -392,7 +387,7 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
     flat_axes[-1].axis("off")
 
     fig.suptitle(
-        "Rear-Wing Required Thrust Ratio with One Analytical Wbar Reference",
+        "Rear-Wing Required Thrust Ratio with One Horseshoe Analytical Reference",
         y=1.012,
     )
     output_figure.parent.mkdir(parents=True, exist_ok=True)

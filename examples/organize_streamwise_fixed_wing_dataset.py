@@ -311,7 +311,12 @@ def _select_rows(results_root: Path) -> tuple[list[dict[str, Any]], dict[str, An
             "front_ratio and rear_ratio are required streamwise thrust divided by "
             "the matching far-lateral single-body baseline for the same AOA"
         ),
-        "color_convention": "blue < 1 means lower thrust than single-body baseline; red > 1 means higher thrust",
+        "color_convention": (
+            "Thrust-ratio maps: blue < 1 means lower thrust than single-body "
+            "baseline and red > 1 means higher thrust. Power maps: blue is "
+            "power saving and red is extra power consumption. Stability maps: "
+            "blue is stable and red is unstable."
+        ),
     }
     return rows, metadata
 
@@ -373,6 +378,39 @@ def _draw_front_wing(ax: plt.Axes) -> None:
     wing_x = np.array([0.0, CHORD_M / SPAN_M, CHORD_M / SPAN_M, 0.0, 0.0])
     wing_y = np.array([-0.5, -0.5, 0.5, 0.5, -0.5])
     ax.fill(wing_x, wing_y, color="black", alpha=0.94, zorder=8)
+
+
+def _draw_tip_pair_neutral_boundary(
+    ax: plt.Axes,
+    y_values: np.ndarray,
+    z_over_span: float,
+) -> None:
+    """Overlay the derived point-tip-vortex neutral stability boundary."""
+    import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
+
+    if y_values.size == 0:
+        return
+    y_min = max(float(np.nanmin(y_values)), 0.5 + 1.0e-6)
+    y_max = float(np.nanmax(y_values))
+    if not np.isfinite(y_min) or not np.isfinite(y_max) or y_min >= y_max:
+        return
+    y_dense = np.linspace(y_min, y_max, 300)
+    x_boundary = sim_analytic.flat_wake.tip_pair_neutral_x_over_span(
+        y_dense,
+        z_over_span,
+        sim_analytic.ANALYTIC_PARAMS,
+    )
+    valid = np.isfinite(x_boundary)
+    if np.any(valid):
+        ax.plot(
+            x_boundary[valid],
+            y_dense[valid],
+            color="#111111",
+            linestyle="-",
+            linewidth=1.45,
+            zorder=9,
+            label="tip-vortex $\\partial_X\\mathcal{W}=0$",
+        )
 
 
 def _ratio_norm(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> TwoSlopeNorm:
@@ -474,25 +512,17 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         "single_body_thrust_N",
     )
     if analytic_x_values.size and analytic_y_values.size:
-        analytic_thrust_grid = sim_analytic.analytical_rear_thrust_grid(
+        analytic_derivative_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
             analytic_x_values,
             analytic_y_values,
             z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
         )
-        analytic_derivative_grid = np.full_like(analytic_thrust_grid, np.nan)
-        for row_index in range(analytic_thrust_grid.shape[0]):
-            valid = np.isfinite(analytic_thrust_grid[row_index])
-            if np.count_nonzero(valid) >= 2:
-                analytic_derivative_grid[row_index, valid] = np.gradient(
-                    analytic_thrust_grid[row_index, valid],
-                    analytic_x_values[valid],
-                )
         derivative_payload.append(
             (
                 analytic_x_values,
                 analytic_y_values,
                 analytic_derivative_grid,
-                "Analytical reference\n$T=T_0-(L/U)\\bar W$, Z/B = 0",
+                "Analytical horseshoe reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
             )
         )
 
@@ -517,21 +547,31 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 y_values,
                 grid,
                 levels=[0.0],
-                colors="black",
+                colors="#555555",
+                linestyles="--",
                 linewidths=1.15,
             )
+        _draw_tip_pair_neutral_boundary(
+            ax,
+            y_values=y_values,
+            z_over_span=0.0,
+        )
         _draw_front_wing(ax)
         ax.set_title(label)
         ax.set_xlabel("X/B")
         ax.set_ylabel("Y/B")
         ax.grid(False)
         cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
-        cbar.set_label("dT / d(X/B) (N)")
+        cbar.set_label("dT / d(X/B) (N)\nblue=streamwise restoring, red=anti-restoring")
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(loc="upper right", framealpha=0.88)
     for ax in flat_axes[len(derivative_payload) :]:
         ax.axis("off")
     if mesh is None:
         raise RuntimeError("No data available for derivative maps.")
-    fig.suptitle("Rear-Wing Streamwise Thrust Gradient (Panel-Wise Color Scales)")
+    fig.suptitle(
+        "Rear-Wing Streamwise Thrust Gradient with Tip-Vortex Neutral Boundary"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
@@ -607,11 +647,15 @@ def build_dataset(
         output_path=figures_dir / "z0_rear_dthrust_dxb_by_aoa.png",
     )
     # Keep comparison figures in the same curated figure directory.
+    import lifting_line_flat_wake_stability as flat_wake
     import plot_single_wing_wake_four_panel as single_wing_wake
     import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
 
     sim_analytic_path = figures_dir / "sim_by_aoa_single_analytic_reference.png"
     sim_analytic.build_figure(input_csv=csv_path, output_figure=sim_analytic_path)
+
+    stability_9panel_path = figures_dir / "streamwise_stability_9panel.png"
+    flat_wake.plot_stability_maps(output_path=stability_9panel_path)
 
     single_wing_case_dir = single_wing_wake.DEFAULT_CASE_DIR
     raw_single_wing_case_dir = (
@@ -621,7 +665,7 @@ def build_dataset(
     if raw_single_wing_case_dir.exists():
         single_wing_case_dir = raw_single_wing_case_dir
     single_wing_wake_path = (
-        figures_dir / "single_wing_wake_slices_sim_vs_wbar_model.png"
+        figures_dir / "single_wing_wake_eight_panel_sim_vs_analytic.png"
     )
     single_wing_wake.build_figure(
         case_dir=single_wing_case_dir,
@@ -643,7 +687,10 @@ def build_dataset(
                     figures_dir / "z0_rear_dthrust_dxb_by_aoa.png"
                 ),
                 "sim_by_aoa_single_analytic_reference": str(sim_analytic_path),
-                "single_wing_wake_slices_sim_vs_wbar_model": str(single_wing_wake_path),
+                "streamwise_stability_9panel": str(stability_9panel_path),
+                "single_wing_wake_eight_panel_sim_vs_analytic": str(
+                    single_wing_wake_path
+                ),
             },
             "analytical_model_parameters": sim_analytic.analytical_model_parameters(),
             "coordinate_convention": (
@@ -652,10 +699,9 @@ def build_dataset(
                 "if the manuscript uses X=x_2-x_1 with bird 2 ahead."
             ),
             "analytical_comparison_note": (
-                "Analytical comparisons use the reduced Wbar_model from the external "
-                "math_models script. The single-wing wake-slice figure compares "
-                "simulated local u_z to that scalar reduced upwash model and does not "
-                "use any other analytical closure."
+                "Streamwise-map analytical comparisons and the 9-panel stability "
+                "figure use the in-repo horseshoe/tip-vortex Biot-Savart model "
+                "from examples/lifting_line_flat_wake_stability.py."
             ),
             "removed_stale_outputs": removed,
             "rows": rows,
@@ -675,11 +721,11 @@ def build_dataset(
         "spacing. If the manuscript writes `X=x_2-x_1` with bird 2 ahead, then the "
         "manuscript's bird 2 corresponds to the plotted front body and the "
         "manuscript's bird 1 corresponds to the plotted rear body.\n\n"
-        "Analytical comparisons use the reduced `Wbar_model` from "
-        "`/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/"
-        "lifting_line_streamwise_stability.py`. The single-wing wake-slice figure "
-        "compares simulated local `u_z` to this scalar reduced upwash model; it does "
-        "not use any other analytical closure.\n\n"
+        "Streamwise-map analytical comparisons and the 9-panel stability figure use "
+        "the in-repo analytical horseshoe/tip-vortex Biot-Savart model in "
+        "`examples/lifting_line_flat_wake_stability.py`. The dT/d(X/B) analytical "
+        "panel uses the derived horseshoe dWbar/dX expression; the overlaid solid "
+        "boundary is the point-receiver tip-vortex-pair neutral contour.\n\n"
         "Generated files:\n"
         f"- `{csv_path.name}`: flat curated table.\n"
         f"- `{json_path.name}`: table plus source-selection metadata.\n"
@@ -687,7 +733,8 @@ def build_dataset(
         "- `figures/aoa05_thrust_ratio_front_rear_by_z.png`\n"
         "- `figures/z0_rear_dthrust_dxb_by_aoa.png`\n"
         "- `figures/sim_by_aoa_single_analytic_reference.png`\n"
-        "- `figures/single_wing_wake_slices_sim_vs_wbar_model.png`\n"
+        "- `figures/streamwise_stability_9panel.png`\n"
+        "- `figures/single_wing_wake_eight_panel_sim_vs_analytic.png`\n"
         "\nRebuild command:\n\n"
         "```bash\n"
         ".venv/bin/python examples/organize_streamwise_fixed_wing_dataset.py\n"
