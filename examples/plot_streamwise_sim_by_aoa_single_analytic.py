@@ -1,13 +1,9 @@
-"""Create a constant-style 8-panel analytical-vs-simulation comparison figure.
+"""Plot simulation AOA slices with one AOA-independent analytical reference.
 
-The figure compares rear-wing normalized required streamwise thrust ratio:
-
-    T_rear / T_single
-
-between simulation data and a lightweight analytical model based on:
-1) a two-tip-vortex induced-upwash approximation,
-2) lift-weighted span averaging,
-3) streamwise thrust correction from DeltaT = -(L/U) * Wbar.
+The analytical panel is intentionally shown only once.  The lightweight model used here
+does not include an angle-of-attack-dependent circulation law; it uses one calibrated
+tip-vortex strength and one single-wing normalization.  Repeating it for AOA 5, 10,
+and 15 deg would imply physics that the model does not currently contain.
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ DEFAULT_OUTPUT_DIR = (
 )
 DEFAULT_INPUT_CSV = DEFAULT_OUTPUT_DIR / "curated_streamwise_summary.csv"
 DEFAULT_OUTPUT_FIGURE = (
-    DEFAULT_OUTPUT_DIR / "figures" / "analytic_vs_sim_rear_ratio_8panel.png"
+    DEFAULT_OUTPUT_DIR / "figures" / "sim_by_aoa_single_analytic_reference.png"
 )
 
 # Geometry and operating constants for this sweep family.
@@ -40,17 +36,19 @@ AIR_DENSITY_KG_M3 = 1.225
 REFERENCE_SPEED_MPS = 1.0
 WEIGHT_N = 0.0235
 
-# Calibrated once against AOA=5, Z/B=0, X/B<=5 to avoid overfitting each panel.
+# Calibrated once against AOA=5, Z/B=0, X/B<=5 to avoid per-panel overfitting.
 TIP_VORTEX_GAMMA_SCALE = 0.665
 
 # Keep X/B=7 now that the long convergence reruns are in the curated dataset.
 X_MAX_OVER_SPAN = 7.0
-CONDITIONS: tuple[tuple[float, float, str], ...] = (
-    (5.0, 0.0, "AOA 5°, Z/B = 0"),
-    (5.0, 0.5, "AOA 5°, Z/B = 0.5"),
-    (10.0, 0.0, "AOA 10°, Z/B = 0"),
-    (15.0, 0.0, "AOA 15°, Z/B = 0"),
+SIMULATION_CONDITIONS: tuple[tuple[float, float, str], ...] = (
+    (5.0, 0.0, "Simulation: AOA 5 deg, Z/B = 0"),
+    (5.0, 0.5, "Simulation: AOA 5 deg, Z/B = 0.5"),
+    (10.0, 0.0, "Simulation: AOA 10 deg, Z/B = 0"),
+    (15.0, 0.0, "Simulation: AOA 15 deg, Z/B = 0"),
 )
+ANALYTIC_REFERENCE_AOA_DEG = 5.0
+ANALYTIC_REFERENCE_Z_OVER_SPAN = 0.0
 
 
 def _apply_constant_style() -> None:
@@ -90,10 +88,7 @@ def _tip_vortex_vertical_velocity(
     z_m: float,
     gamma_tip_m2_s: float,
 ) -> float:
-    """Return induced vertical velocity from two semi-infinite tip vortices.
-
-    Vortex lines start at x=0 and extend to +x. Tip locations are y=±B/2, z=0.
-    """
+    """Return induced vertical velocity from two semi-infinite tip vortices."""
     velocity_z_mps = 0.0
     # Circulation signs chosen to produce downwash near center and upwash outboard.
     for y0_m, gamma_m2_s in (
@@ -120,7 +115,6 @@ def _lift_weighted_wbar_mps(
 ) -> float:
     """Compute lift-weighted Wbar over the receiver span."""
     xi_m = np.linspace(-SEMI_SPAN_M, +SEMI_SPAN_M, 241)
-    # Elliptic-like span load weighting for smooth lift-weighted averaging.
     weights = np.sqrt(np.maximum(0.0, 1.0 - (2.0 * xi_m / SPAN_M) ** 2))
     x_m = x_over_span * SPAN_M
     y_m = y_over_span * SPAN_M
@@ -161,46 +155,70 @@ def _predict_rear_ratio_from_analytic_wbar(
     return float(predicted_rear_thrust_n / single_body_thrust_n)
 
 
-def _build_condition_grids(
-    data: np.ndarray,
-    aoa_deg: float,
-    z_over_span: float,
-    gamma_tip_m2_s: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return X, Y, simulation, analytical grids for one condition."""
-    condition_mask = (
+def _condition_mask(data: np.ndarray, aoa_deg: float, z_over_span: float) -> np.ndarray:
+    """Return the mask for one simulation condition."""
+    return (
         np.isclose(data["aoa_deg"], aoa_deg)
         & np.isclose(data["zB"], z_over_span)
         & (data["xB"] <= X_MAX_OVER_SPAN)
     )
-    subset_indices = np.where(condition_mask)[0]
+
+
+def _simulation_grid(
+    data: np.ndarray,
+    aoa_deg: float,
+    z_over_span: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return X, Y, and rear-thrust-ratio simulation grid for one condition."""
+    subset_indices = np.where(_condition_mask(data, aoa_deg, z_over_span))[0]
     if subset_indices.size == 0:
         raise RuntimeError(f"No data found for AOA={aoa_deg}, Z/B={z_over_span}.")
 
     x_values = np.array(sorted(np.unique(data["xB"][subset_indices])), dtype=float)
     y_values = np.array(sorted(np.unique(data["yB"][subset_indices])), dtype=float)
-
-    sim_grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
-    ana_grid = np.full_like(sim_grid, np.nan)
-
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     y_index = {value: idx for idx, value in enumerate(y_values)}
     x_index = {value: idx for idx, value in enumerate(x_values)}
 
     for row_index in subset_indices:
-        x_over_span = float(data["xB"][row_index])
-        y_over_span = float(data["yB"][row_index])
-        this_y = y_index[y_over_span]
-        this_x = x_index[x_over_span]
-        sim_grid[this_y, this_x] = float(data["rear_ratio"][row_index])
-        ana_grid[this_y, this_x] = _predict_rear_ratio_from_analytic_wbar(
-            x_over_span=x_over_span,
-            y_over_span=y_over_span,
-            z_over_span=float(data["zB"][row_index]),
-            single_body_thrust_n=float(data["single_body_thrust_N"][row_index]),
-            gamma_tip_m2_s=gamma_tip_m2_s,
-        )
+        this_y = y_index[float(data["yB"][row_index])]
+        this_x = x_index[float(data["xB"][row_index])]
+        grid[this_y, this_x] = float(data["rear_ratio"][row_index])
 
-    return x_values, y_values, sim_grid, ana_grid
+    return x_values, y_values, grid
+
+
+def _analytic_reference_grid(
+    data: np.ndarray,
+    gamma_tip_m2_s: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return a single AOA-independent analytical reference grid."""
+    subset_indices = np.where(
+        _condition_mask(
+            data,
+            ANALYTIC_REFERENCE_AOA_DEG,
+            ANALYTIC_REFERENCE_Z_OVER_SPAN,
+        )
+    )[0]
+    if subset_indices.size == 0:
+        raise RuntimeError("No data found for the analytical reference grid.")
+
+    x_values = np.array(sorted(np.unique(data["xB"][subset_indices])), dtype=float)
+    y_values = np.array(sorted(np.unique(data["yB"][subset_indices])), dtype=float)
+    single_body_thrust_n = float(np.mean(data["single_body_thrust_N"][subset_indices]))
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
+
+    for y_index, y_over_span in enumerate(y_values):
+        for x_index, x_over_span in enumerate(x_values):
+            grid[y_index, x_index] = _predict_rear_ratio_from_analytic_wbar(
+                x_over_span=float(x_over_span),
+                y_over_span=float(y_over_span),
+                z_over_span=ANALYTIC_REFERENCE_Z_OVER_SPAN,
+                single_body_thrust_n=single_body_thrust_n,
+                gamma_tip_m2_s=gamma_tip_m2_s,
+            )
+
+    return x_values, y_values, grid
 
 
 def _draw_source_wing_outline(ax: plt.Axes) -> None:
@@ -210,8 +228,37 @@ def _draw_source_wing_outline(ax: plt.Axes) -> None:
     ax.plot(wing_x, wing_y, color="black", linewidth=1.0, alpha=0.75)
 
 
+def _plot_grid(
+    ax: plt.Axes,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    grid: np.ndarray,
+    color_norm: TwoSlopeNorm,
+    title: str,
+) -> mpl.collections.QuadMesh:
+    """Plot one grid and source-wing outline."""
+    x_edges = _grid_edges(x_values)
+    y_edges = _grid_edges(y_values)
+    mesh = ax.pcolormesh(
+        x_edges,
+        y_edges,
+        grid,
+        shading="auto",
+        cmap="RdBu_r",
+        norm=color_norm,
+    )
+    _draw_source_wing_outline(ax)
+    ax.set_xlim(x_edges[0], x_edges[-1])
+    ax.set_ylim(y_edges[0], y_edges[-1])
+    ax.set_title(title)
+    ax.set_xlabel("X/B")
+    ax.set_ylabel("Y/B")
+    ax.grid(False)
+    return mesh
+
+
 def build_figure(input_csv: Path, output_figure: Path) -> None:
-    """Build and save the 8-panel analytical-vs-simulation figure."""
+    """Build and save the simulation-plus-one-analytic-reference figure."""
     _apply_constant_style()
     data = np.genfromtxt(
         input_csv,
@@ -224,93 +271,57 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
     gamma_base_m2_s = WEIGHT_N / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M)
     gamma_tip_m2_s = TIP_VORTEX_GAMMA_SCALE * gamma_base_m2_s
 
-    # Precompute all grids to define a shared color scale.
-    condition_payload: list[
-        tuple[float, float, str, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-    ] = []
+    sim_payload = []
     all_values: list[np.ndarray] = []
-    for aoa_deg, z_over_span, label in CONDITIONS:
-        x_values, y_values, sim_grid, ana_grid = _build_condition_grids(
-            data=data,
-            aoa_deg=aoa_deg,
-            z_over_span=z_over_span,
-            gamma_tip_m2_s=gamma_tip_m2_s,
-        )
-        condition_payload.append(
-            (aoa_deg, z_over_span, label, x_values, y_values, sim_grid, ana_grid)
-        )
-        all_values.extend(
-            (sim_grid[np.isfinite(sim_grid)], ana_grid[np.isfinite(ana_grid)])
-        )
+    for aoa_deg, z_over_span, label in SIMULATION_CONDITIONS:
+        x_values, y_values, grid = _simulation_grid(data, aoa_deg, z_over_span)
+        sim_payload.append((label, x_values, y_values, grid))
+        all_values.append(grid[np.isfinite(grid)])
 
+    analytic_x, analytic_y, analytic_grid = _analytic_reference_grid(
+        data=data,
+        gamma_tip_m2_s=gamma_tip_m2_s,
+    )
+    all_values.append(analytic_grid[np.isfinite(analytic_grid)])
     finite_values = np.concatenate(all_values)
     ratio_dev = np.max(np.abs(finite_values - 1.0))
     ratio_half_range = max(0.05, float(ratio_dev))
     color_norm = TwoSlopeNorm(
-        vmin=1.0 - ratio_half_range, vcenter=1.0, vmax=1.0 + ratio_half_range
+        vmin=1.0 - ratio_half_range,
+        vcenter=1.0,
+        vmax=1.0 + ratio_half_range,
     )
 
-    fig, axes = plt.subplots(
-        4,
-        2,
-        figsize=(13, 18),
-        sharex=True,
-        sharey=True,
-        constrained_layout=True,
-    )
-    cmap = "RdBu_r"
+    fig = plt.figure(figsize=(13.5, 15.0), constrained_layout=True)
+    gridspec = fig.add_gridspec(4, 2, width_ratios=(1.0, 1.05))
     mesh = None
-    for row_id, payload in enumerate(condition_payload):
-        _, _, row_label, x_values, y_values, sim_grid, ana_grid = payload
-        x_edges = _grid_edges(x_values)
-        y_edges = _grid_edges(y_values)
-        for col_id, (grid, title_suffix) in enumerate(
-            ((sim_grid, "Simulation"), (ana_grid, "Analytical"))
-        ):
-            ax = axes[row_id, col_id]
-            mesh = ax.pcolormesh(
-                x_edges,
-                y_edges,
-                grid,
-                shading="auto",
-                cmap=cmap,
-                norm=color_norm,
-            )
-            _draw_source_wing_outline(ax)
-            ax.set_xlim(x_edges[0], x_edges[-1])
-            ax.set_ylim(y_edges[0], y_edges[-1])
-            ax.set_title(f"{row_label} | {title_suffix}")
+    for row_index, (label, x_values, y_values, grid) in enumerate(sim_payload):
+        ax = fig.add_subplot(gridspec[row_index, 0])
+        mesh = _plot_grid(ax, x_values, y_values, grid, color_norm, label)
 
-            valid = np.isfinite(sim_grid) & np.isfinite(ana_grid)
-            if np.any(valid) and col_id == 1:
-                sim_values = sim_grid[valid]
-                ana_values = ana_grid[valid]
-                rmse = float(np.sqrt(np.mean((sim_values - ana_values) ** 2)))
-                corr = float(np.corrcoef(sim_values, ana_values)[0, 1])
-                ax.text(
-                    0.02,
-                    0.02,
-                    f"RMSE={rmse:.3f}, r={corr:.3f}",
-                    transform=ax.transAxes,
-                    fontsize=8.5,
-                    bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
-                )
+    analytic_ax = fig.add_subplot(gridspec[:, 1])
+    mesh = _plot_grid(
+        analytic_ax,
+        analytic_x,
+        analytic_y,
+        analytic_grid,
+        color_norm,
+        ("Single analytical reference\n" "AOA-independent tip-vortex model, Z/B = 0"),
+    )
+    analytic_ax.text(
+        0.02,
+        0.02,
+        "Shown once because Gamma is not AOA-dependent in this model.",
+        transform=analytic_ax.transAxes,
+        fontsize=9,
+        bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
+    )
 
-    if mesh is None:
-        raise RuntimeError("Failed to generate pcolormesh output.")
-
-    for ax in axes[-1, :]:
-        ax.set_xlabel("X/B")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Y/B")
-
-    cbar = fig.colorbar(mesh, ax=axes, fraction=0.02, pad=0.015)
+    cbar = fig.colorbar(mesh, ax=fig.axes, fraction=0.025, pad=0.015)
     cbar.set_label("Normalized Required Rear Thrust  $T_{rear}/T_{single}$")
-
     fig.suptitle(
-        "Analytical vs Simulation Comparison (Constant Style)\n"
-        "Two fixed wings, streamwise formation maps",
-        y=0.995,
+        "Simulation AOA Slices with One Analytical Reference",
+        y=0.998,
     )
     output_figure.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_figure, bbox_inches="tight")
@@ -320,13 +331,13 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Create an 8-panel analytical-vs-simulation comparison figure."
+        description="Plot simulation AOA slices with one analytical reference."
     )
     parser.add_argument(
         "--input-csv",
         type=Path,
         default=DEFAULT_INPUT_CSV,
-        help="Path to combined sweep summary CSV.",
+        help="Path to curated streamwise summary CSV.",
     )
     parser.add_argument(
         "--output-figure",

@@ -562,12 +562,12 @@ def build_dataset(
         rows=rows,
         output_path=figures_dir / "z0_rear_dthrust_dxb_by_aoa.png",
     )
-    # Keep the two comparison figures in the same curated figure directory.
+    # Keep comparison figures in the same curated figure directory.
     import plot_single_wing_wake_four_panel as single_wing_wake
-    import plot_streamwise_analytic_vs_sim_8panel as analytic_vs_sim
+    import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
 
-    analytic_vs_sim_path = figures_dir / "analytic_vs_sim_rear_ratio_8panel.png"
-    analytic_vs_sim.build_figure(input_csv=csv_path, output_figure=analytic_vs_sim_path)
+    sim_analytic_path = figures_dir / "sim_by_aoa_single_analytic_reference.png"
+    sim_analytic.build_figure(input_csv=csv_path, output_figure=sim_analytic_path)
 
     single_wing_case_dir = single_wing_wake.DEFAULT_CASE_DIR
     raw_single_wing_case_dir = (
@@ -598,7 +598,7 @@ def build_dataset(
                 "z0_rear_dthrust_dxb_by_aoa": str(
                     figures_dir / "z0_rear_dthrust_dxb_by_aoa.png"
                 ),
-                "analytic_vs_sim_rear_ratio_8panel": str(analytic_vs_sim_path),
+                "sim_by_aoa_single_analytic_reference": str(sim_analytic_path),
                 "single_wing_wake_eight_panel_sim_vs_analytic": str(
                     single_wing_wake_path
                 ),
@@ -622,7 +622,7 @@ def build_dataset(
         "- `figures/z0_thrust_ratio_front_rear_by_aoa.png`\n"
         "- `figures/aoa05_thrust_ratio_front_rear_by_z.png`\n"
         "- `figures/z0_rear_dthrust_dxb_by_aoa.png`\n"
-        "- `figures/analytic_vs_sim_rear_ratio_8panel.png`\n"
+        "- `figures/sim_by_aoa_single_analytic_reference.png`\n"
         "- `figures/single_wing_wake_eight_panel_sim_vs_analytic.png`\n"
         "\nRebuild command:\n\n"
         "```bash\n"
