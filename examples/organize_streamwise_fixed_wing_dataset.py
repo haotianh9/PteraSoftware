@@ -442,6 +442,8 @@ def _plot_ratio_maps(
 
 def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) -> None:
     """Plot unnormalized rear dT/d(X/B) for Z/B=0."""
+    import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
+
     conditions = (
         (5.0, 0.0, "AOA 5 deg, Z/B = 0"),
         (10.0, 0.0, "AOA 10 deg, Z/B = 0"),
@@ -463,13 +465,54 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         derivative_payload.append((x_values, y_values, derivative_grid, label))
         all_values.extend(derivative_grid[np.isfinite(derivative_grid)])
 
+    analytic_x_values, analytic_y_values, analytic_single_thrust_grid = _grid_from_rows(
+        rows,
+        sim_analytic.ANALYTIC_REFERENCE_AOA_DEG,
+        sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
+        "single_body_thrust_N",
+    )
+    if analytic_x_values.size and analytic_y_values.size:
+        single_body_thrust_n = float(
+            np.nanmean(
+                analytic_single_thrust_grid[np.isfinite(analytic_single_thrust_grid)]
+            )
+        )
+        analytic_thrust_grid = sim_analytic.analytical_rear_thrust_grid(
+            analytic_x_values,
+            analytic_y_values,
+            z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
+            single_body_thrust_n=single_body_thrust_n,
+            gamma_tip_m2_s=sim_analytic.analytical_tip_vortex_gamma_m2_s(),
+        )
+        analytic_derivative_grid = np.full_like(analytic_thrust_grid, np.nan)
+        for row_index in range(analytic_thrust_grid.shape[0]):
+            valid = np.isfinite(analytic_thrust_grid[row_index])
+            if np.count_nonzero(valid) >= 2:
+                analytic_derivative_grid[row_index, valid] = np.gradient(
+                    analytic_thrust_grid[row_index, valid],
+                    analytic_x_values[valid],
+                )
+        derivative_payload.append(
+            (
+                analytic_x_values,
+                analytic_y_values,
+                analytic_derivative_grid,
+                "Analytical reference\nAOA-independent, Z/B = 0",
+            )
+        )
+        all_values.extend(
+            analytic_derivative_grid[np.isfinite(analytic_derivative_grid)]
+        )
+
     all_values_array = np.asarray(all_values, dtype=float)
     vmax = max(1.0e-12, float(np.nanmax(np.abs(all_values_array))))
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
-    fig, axes = plt.subplots(3, 1, figsize=(8.0, 11.0), constrained_layout=True)
+    fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), constrained_layout=True)
+    flat_axes = axes.ravel()
+    active_axes = []
     mesh = None
-    for ax, (x_values, y_values, grid, label) in zip(axes, derivative_payload):
+    for ax, (x_values, y_values, grid, label) in zip(flat_axes, derivative_payload):
         mesh = ax.pcolormesh(
             _edges(x_values),
             _edges(y_values),
@@ -478,7 +521,8 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
             cmap="RdBu_r",
             norm=norm,
         )
-        if np.nanmin(grid) <= 0.0 <= np.nanmax(grid):
+        active_axes.append(ax)
+        if np.any(np.isfinite(grid)) and np.nanmin(grid) <= 0.0 <= np.nanmax(grid):
             ax.contour(
                 x_values,
                 y_values,
@@ -492,9 +536,11 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         ax.set_xlabel("X/B")
         ax.set_ylabel("Y/B")
         ax.grid(False)
+    for ax in flat_axes[len(derivative_payload) :]:
+        ax.axis("off")
     if mesh is None:
         raise RuntimeError("No data available for derivative maps.")
-    cbar = fig.colorbar(mesh, ax=axes, fraction=0.025, pad=0.015)
+    cbar = fig.colorbar(mesh, ax=active_axes, fraction=0.025, pad=0.015)
     cbar.set_label("Rear dT / d(X/B) (N)")
     fig.suptitle("Rear-Wing Streamwise Thrust Gradient")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -612,6 +658,9 @@ def build_dataset(
                     single_wing_wake_path
                 ),
             },
+            "analytical_model_parameters": sim_analytic.analytical_model_parameters(
+                single_body_thrust_n=metadata["baselines_by_aoa_N"].get(5.0)
+            ),
             "removed_stale_outputs": removed,
             "rows": rows,
         }

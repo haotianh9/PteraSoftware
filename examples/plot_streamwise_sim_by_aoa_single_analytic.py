@@ -51,6 +51,12 @@ ANALYTIC_REFERENCE_AOA_DEG = 5.0
 ANALYTIC_REFERENCE_Z_OVER_SPAN = 0.0
 
 
+def analytical_tip_vortex_gamma_m2_s() -> float:
+    """Return the calibrated analytical tip-vortex circulation strength."""
+    gamma_base_m2_s = WEIGHT_N / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M)
+    return float(TIP_VORTEX_GAMMA_SCALE * gamma_base_m2_s)
+
+
 def _apply_constant_style() -> None:
     """Apply one global figure style for consistent output."""
     mpl.rcParams.update(
@@ -221,6 +227,54 @@ def _analytic_reference_grid(
     return x_values, y_values, grid
 
 
+def analytical_rear_thrust_grid(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    *,
+    z_over_span: float,
+    single_body_thrust_n: float,
+    gamma_tip_m2_s: float,
+) -> np.ndarray:
+    """Return analytical rear required-thrust values on an X/B-Y/B grid."""
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
+    for y_index, y_over_span in enumerate(y_values):
+        for x_index, x_over_span in enumerate(x_values):
+            wbar_mps = _lift_weighted_wbar_mps(
+                x_over_span=float(x_over_span),
+                y_over_span=float(y_over_span),
+                z_over_span=float(z_over_span),
+                gamma_tip_m2_s=gamma_tip_m2_s,
+            )
+            delta_thrust_n = -(WEIGHT_N / REFERENCE_SPEED_MPS) * wbar_mps
+            grid[y_index, x_index] = single_body_thrust_n + delta_thrust_n
+    return grid
+
+
+def analytical_model_parameters(single_body_thrust_n: float | None = None) -> dict:
+    """Return the parameter choices used by the analytical reference model."""
+    parameters = {
+        "span_m": SPAN_M,
+        "semispan_m": SEMI_SPAN_M,
+        "root_chord_m": ROOT_CHORD_M,
+        "air_density_kg_m3": AIR_DENSITY_KG_M3,
+        "reference_speed_mps": REFERENCE_SPEED_MPS,
+        "weight_n": WEIGHT_N,
+        "tip_vortex_gamma_scale": TIP_VORTEX_GAMMA_SCALE,
+        "gamma_base_m2_s": WEIGHT_N
+        / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M),
+        "gamma_tip_m2_s": analytical_tip_vortex_gamma_m2_s(),
+        "spanwise_samples": 241,
+        "span_loading": "elliptic-like sqrt(1 - (2 xi / B)^2)",
+        "vortex_model": "two semi-infinite tip vortices starting at x=0 and extending downstream",
+        "power_to_thrust_relation": "Delta T = -(weight/U) * Wbar",
+        "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
+        "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
+    }
+    if single_body_thrust_n is not None:
+        parameters["single_body_thrust_n"] = float(single_body_thrust_n)
+    return parameters
+
+
 def _draw_source_wing_outline(ax: plt.Axes) -> None:
     """Draw source-wing footprint in normalized coordinates."""
     wing_x = np.array([0.0, ROOT_CHORD_M / SPAN_M, ROOT_CHORD_M / SPAN_M, 0.0, 0.0])
@@ -268,8 +322,7 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         encoding=None,
     )
 
-    gamma_base_m2_s = WEIGHT_N / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M)
-    gamma_tip_m2_s = TIP_VORTEX_GAMMA_SCALE * gamma_base_m2_s
+    gamma_tip_m2_s = analytical_tip_vortex_gamma_m2_s()
 
     sim_payload = []
     all_values: list[np.ndarray] = []
