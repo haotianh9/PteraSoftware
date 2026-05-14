@@ -71,6 +71,12 @@ def _run_case(payload: dict[str, Any]) -> dict[str, Any]:
         angle_of_attack_deg=float(payload["angle_of_attack_deg"]),
         max_abs_x_over_span=float(payload["max_abs_x_over_span"]),
         max_abs_speed_mps=float(payload["max_abs_speed_mps"]),
+        early_stop_converged=bool(payload["early_stop_converged"]),
+        early_stop_min_time_s=float(payload["early_stop_min_time_s"]),
+        early_stop_window_s=float(payload["early_stop_window_s"]),
+        early_stop_rel_change_tol=float(payload["early_stop_rel_change_tol"]),
+        early_stop_rel_slope_tol=float(payload["early_stop_rel_slope_tol"]),
+        early_stop_check_every_n_steps=int(payload["early_stop_check_every_n_steps"]),
     )
     summary["_parallel_output_dir"] = payload["output_dir"]
     summary["_parallel_is_baseline"] = bool(payload.get("is_baseline", False))
@@ -185,6 +191,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-abs-x-over-span", type=float, default=20.0)
     parser.add_argument("--max-abs-speed-mps", type=float, default=50.0)
+    parser.add_argument(
+        "--early-stop-converged",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=("Stop a case cleanly once rear-wing streamwise clamp thrust converges."),
+    )
+    parser.add_argument("--early-stop-min-time-s", type=float, default=12.0)
+    parser.add_argument("--early-stop-window-s", type=float, default=2.0)
+    parser.add_argument("--early-stop-rel-change-tol", type=float, default=0.01)
+    parser.add_argument("--early-stop-rel-slope-tol", type=float, default=0.01)
+    parser.add_argument("--early-stop-check-every-n-steps", type=int, default=48)
     return parser.parse_args()
 
 
@@ -199,6 +216,8 @@ def main() -> None:
         raise ValueError("--numba-threads-per-worker must be at least 1.")
     if args.max_tasks_per_child < 0:
         raise ValueError("--max-tasks-per-child must be non-negative.")
+    if args.early_stop_check_every_n_steps < 1:
+        raise ValueError("--early-stop-check-every-n-steps must be at least 1.")
 
     output_root = args.output_root
     output_root.mkdir(parents=True, exist_ok=True)
@@ -261,6 +280,12 @@ def main() -> None:
                 "angle_of_attack_deg": args.angle_of_attack_deg,
                 "max_abs_x_over_span": args.max_abs_x_over_span,
                 "max_abs_speed_mps": args.max_abs_speed_mps,
+                "early_stop_converged": args.early_stop_converged,
+                "early_stop_min_time_s": args.early_stop_min_time_s,
+                "early_stop_window_s": args.early_stop_window_s,
+                "early_stop_rel_change_tol": args.early_stop_rel_change_tol,
+                "early_stop_rel_slope_tol": args.early_stop_rel_slope_tol,
+                "early_stop_check_every_n_steps": args.early_stop_check_every_n_steps,
                 "numba_threads_per_worker": numba_threads_per_worker,
                 "baseline_power_W": None,
                 "is_baseline": True,
@@ -286,6 +311,12 @@ def main() -> None:
                 "angle_of_attack_deg": args.angle_of_attack_deg,
                 "max_abs_x_over_span": args.max_abs_x_over_span,
                 "max_abs_speed_mps": args.max_abs_speed_mps,
+                "early_stop_converged": args.early_stop_converged,
+                "early_stop_min_time_s": args.early_stop_min_time_s,
+                "early_stop_window_s": args.early_stop_window_s,
+                "early_stop_rel_change_tol": args.early_stop_rel_change_tol,
+                "early_stop_rel_slope_tol": args.early_stop_rel_slope_tol,
+                "early_stop_check_every_n_steps": args.early_stop_check_every_n_steps,
                 "numba_threads_per_worker": numba_threads_per_worker,
                 "baseline_power_W": None,
                 "is_baseline": False,
@@ -378,6 +409,12 @@ def main() -> None:
         "total_requested_threads": total_requested_threads,
         "cpu_count": cpu_count,
         "start_method": args.start_method,
+        "early_stop_converged": args.early_stop_converged,
+        "early_stop_min_time_s": args.early_stop_min_time_s,
+        "early_stop_window_s": args.early_stop_window_s,
+        "early_stop_rel_change_tol": args.early_stop_rel_change_tol,
+        "early_stop_rel_slope_tol": args.early_stop_rel_slope_tol,
+        "early_stop_check_every_n_steps": args.early_stop_check_every_n_steps,
         "baseline_summary": (
             None
             if baseline_summary is None

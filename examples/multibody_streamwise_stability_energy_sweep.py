@@ -67,6 +67,10 @@ DEFAULT_STEPS_PER_REFERENCE_TIME = 24
 DEFAULT_TIME_STEP_S = REFERENCE_TIME_S / DEFAULT_STEPS_PER_REFERENCE_TIME
 
 
+class FixedFormationConvergedEarly(RuntimeError):
+    """Signal that a monitored fixed-formation case has converged cleanly."""
+
+
 def parse_float_tuple(values_text: str) -> tuple[float, ...]:
     """Parse a comma-separated list of floats."""
     if not isinstance(values_text, str):
@@ -209,6 +213,19 @@ class StreamwiseClampDiagnostics:
         self.projected_moments_E_Cg: list[np.ndarray] = []
         self.preclamp_velocities_E: list[np.ndarray] = []
         self.preclamp_angular_rates_rad_s: list[np.ndarray] = []
+        self.early_stop_enabled = False
+        self.early_stop_min_time_s = 0.0
+        self.early_stop_window_s = 2.0
+        self.early_stop_rel_change_tol = 0.01
+        self.early_stop_rel_slope_tol = 0.01
+        self.early_stop_check_every_n_steps = 1
+        self.early_stop_body_index = 1
+        self.early_stop_force_axis = 0
+        self.early_stop_triggered = False
+        self.early_stop_step: int | None = None
+        self.early_stop_time_s: float | None = None
+        self.early_stop_reason: str | None = None
+        self.early_stop_metrics: dict[str, float] = {}
 
     def configure_load_streaming(
         self,
@@ -223,6 +240,42 @@ class StreamwiseClampDiagnostics:
         self.streamed_load_history_dir = Path(history_save_dir) / "clamp_loads"
         self.streamed_load_history_dir.mkdir(parents=True, exist_ok=True)
         self.streamed_load_save_every_n_steps = int(save_every_n_steps)
+
+    def configure_early_stop(
+        self,
+        *,
+        enabled: bool,
+        min_time_s: float,
+        window_s: float,
+        rel_change_tol: float,
+        rel_slope_tol: float,
+        check_every_n_steps: int,
+        body_index: int = 1,
+        force_axis: int = 0,
+    ) -> None:
+        """Configure thrust-history convergence monitoring."""
+        self.early_stop_enabled = bool(enabled)
+        self.early_stop_min_time_s = float(min_time_s)
+        self.early_stop_window_s = float(window_s)
+        self.early_stop_rel_change_tol = float(rel_change_tol)
+        self.early_stop_rel_slope_tol = float(rel_slope_tol)
+        self.early_stop_check_every_n_steps = max(1, int(check_every_n_steps))
+        self.early_stop_body_index = int(body_index)
+        self.early_stop_force_axis = int(force_axis)
+        if not self.early_stop_enabled:
+            return
+        if self.early_stop_min_time_s < 0.0:
+            raise ValueError("early-stop min_time_s must be non-negative.")
+        if self.early_stop_window_s <= 0.0:
+            raise ValueError("early-stop window_s must be positive.")
+        if self.early_stop_rel_change_tol <= 0.0:
+            raise ValueError("early-stop rel_change_tol must be positive.")
+        if self.early_stop_rel_slope_tol <= 0.0:
+            raise ValueError("early-stop rel_slope_tol must be positive.")
+        if not 0 <= self.early_stop_body_index < self.mujoco_model.num_bodies:
+            raise ValueError("early-stop body_index is out of range.")
+        if not 0 <= self.early_stop_force_axis < 3:
+            raise ValueError("early-stop force_axis must be 0, 1, or 2.")
 
     def install(self) -> None:
         """Install load projection and post-step state clamping."""
@@ -250,6 +303,7 @@ class StreamwiseClampDiagnostics:
                 projected_forces_E=projected_forces_E,
                 projected_moments_E_Cg=projected_moments_E_Cg,
             )
+            self._raise_if_converged_if_requested(step=len(self.raw_forces_E) - 1)
             original_apply_loads(projected_forces_E, projected_moments_E_Cg)
 
         def step_fixed_formation() -> None:
@@ -296,6 +350,68 @@ class StreamwiseClampDiagnostics:
             projected_forces_E_N=projected_forces_E.copy(),
             projected_moments_E_Cg_Nm=projected_moments_E_Cg.copy(),
         )
+
+    def _raise_if_converged_if_requested(self, step: int) -> None:
+        """Raise once the monitored clamp thrust slope is steady in one window."""
+        if not self.early_stop_enabled or self.early_stop_triggered:
+            return
+        if step % self.early_stop_check_every_n_steps != 0:
+            return
+
+        current_time_s = step * self.delta_time_s
+        earliest_check_time_s = self.early_stop_min_time_s + self.early_stop_window_s
+        if current_time_s < earliest_check_time_s:
+            return
+
+        window_steps = max(2, int(round(self.early_stop_window_s / self.delta_time_s)))
+        if len(self.raw_forces_E) < window_steps:
+            return
+
+        clamp_forces_E = -np.stack(self.raw_forces_E, axis=0)
+        force_history = clamp_forces_E[
+            :, self.early_stop_body_index, self.early_stop_force_axis
+        ]
+        if not np.all(np.isfinite(force_history)):
+            return
+
+        latest = force_history[-window_steps:]
+        times_latest_s = (
+            np.arange(len(force_history) - window_steps, len(force_history))
+            * self.delta_time_s
+        )
+        latest_mean_N = float(np.mean(latest))
+        denominator_N = max(abs(latest_mean_N), 1.0e-12)
+        slope_N_per_s = float(
+            np.polyfit(times_latest_s - times_latest_s[0], latest, 1)[0]
+        )
+        rel_slope = abs(slope_N_per_s) * self.early_stop_window_s / denominator_N
+        split_index = max(1, len(latest) // 2)
+        early_window_mean_N = float(np.mean(latest[:split_index]))
+        late_window_mean_N = float(np.mean(latest[split_index:]))
+        rel_change = abs(late_window_mean_N - early_window_mean_N) / denominator_N
+
+        if (
+            rel_slope <= self.early_stop_rel_slope_tol
+            and rel_change <= self.early_stop_rel_change_tol
+        ):
+            self.early_stop_triggered = True
+            self.early_stop_step = int(step)
+            self.early_stop_time_s = float(current_time_s)
+            self.early_stop_reason = (
+                "rear streamwise clamp thrust slope converged in final window"
+            )
+            self.early_stop_metrics = {
+                "monitored_body_index": float(self.early_stop_body_index),
+                "monitored_force_axis": float(self.early_stop_force_axis),
+                "window_s": float(self.early_stop_window_s),
+                "latest_mean_thrust_N": latest_mean_N,
+                "early_window_mean_thrust_N": early_window_mean_N,
+                "late_window_mean_thrust_N": late_window_mean_N,
+                "slope_N_per_s": slope_N_per_s,
+                "rel_slope_over_window": float(rel_slope),
+                "rel_change_over_window": float(rel_change),
+            }
+            raise FixedFormationConvergedEarly(self.early_stop_reason)
 
     def enforce_state(self, record: bool) -> None:
         """Clamp all rigid-body state components and record pre-clamp rates."""
@@ -1458,6 +1574,12 @@ def run_streamwise_case(
     angle_of_attack_deg: float = DEFAULT_ANGLE_OF_ATTACK_DEG,
     max_abs_x_over_span: float = 20.0,
     max_abs_speed_mps: float = 50.0,
+    early_stop_converged: bool = False,
+    early_stop_min_time_s: float = 12.0,
+    early_stop_window_s: float = 2.0,
+    early_stop_rel_change_tol: float = 0.01,
+    early_stop_rel_slope_tol: float = 0.01,
+    early_stop_check_every_n_steps: int = 48,
 ) -> dict[str, Any]:
     """Run one fixed-formation case and write diagnostics."""
     if not initial_condition_is_collision_free(
@@ -1501,6 +1623,16 @@ def run_streamwise_case(
         history_save_dir=history_save_dir,
         save_every_n_steps=save_every_n_steps,
     )
+    clamp_diagnostics.configure_early_stop(
+        enabled=early_stop_converged,
+        min_time_s=early_stop_min_time_s,
+        window_s=early_stop_window_s,
+        rel_change_tol=early_stop_rel_change_tol,
+        rel_slope_tol=early_stop_rel_slope_tol,
+        check_every_n_steps=early_stop_check_every_n_steps,
+        body_index=1,
+        force_axis=0,
+    )
     run_status = "ok"
     error_message: str | None = None
     try:
@@ -1510,6 +1642,15 @@ def run_streamwise_case(
             history_stride=history_stride,
             save_every_n_steps=save_every_n_steps,
             history_save_dir=history_save_dir,
+        )
+    except FixedFormationConvergedEarly as exc:
+        run_status = "ok"
+        error_message = None
+        print(
+            "Fixed-formation case converged early; saving diagnostics for "
+            f"X/B={x_over_span:.3f}, Y/B={y_over_span:.3f}, Z/B={z_over_span:.3f}. "
+            f"Reason: {exc}",
+            flush=True,
         )
     except Exception as exc:
         run_status = "failed"
@@ -1569,6 +1710,12 @@ def run_streamwise_case(
     )
     if compute_wbar and history_stride != 1:
         summary["stage_2_wbar_status"] = "skipped_requires_history_stride_1"
+    summary["early_stop_enabled"] = bool(early_stop_converged)
+    summary["early_converged"] = bool(clamp_diagnostics.early_stop_triggered)
+    summary["early_stop_step"] = clamp_diagnostics.early_stop_step
+    summary["early_stop_time_s"] = clamp_diagnostics.early_stop_time_s
+    summary["early_stop_reason"] = clamp_diagnostics.early_stop_reason
+    summary["early_stop_metrics"] = clamp_diagnostics.early_stop_metrics
     summary["history_npz"] = str(history_path)
     summary["diagnostic_plots"] = save_case_plots(
         output_dir=output_dir,
@@ -1604,6 +1751,9 @@ def summary_csv_row(summary: dict[str, Any]) -> dict[str, Any]:
         "max_yz_drift_m",
         "max_euler_deviation_deg",
         "time_total_completed_s",
+        "early_stop_enabled",
+        "early_converged",
+        "early_stop_time_s",
     )
     row = {key: summary.get(key, "") for key in row_keys}
     for body_index in range(2):
