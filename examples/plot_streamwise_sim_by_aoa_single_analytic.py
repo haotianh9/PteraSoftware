@@ -227,18 +227,22 @@ def analytical_rear_dthrust_dxb_grid(
     y_values: np.ndarray,
     *,
     z_over_span: float,
+    wake_only: bool = False,
 ) -> np.ndarray:
-    """Return analytical rear dT/d(X/B) from the full horseshoe dWbar/dX."""
+    """Return analytical rear dT/d(X/B)."""
+    gradient_function = (
+        horseshoe_model.lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n
+        if wake_only
+        else horseshoe_model.lift_weighted_thrust_gradient_per_x_over_span_n
+    )
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
-            grid[y_index, x_index] = (
-                horseshoe_model.lift_weighted_thrust_gradient_per_x_over_span_n(
-                    float(x_over_span) * SPAN_M,
-                    float(y_over_span) * SPAN_M,
-                    float(z_over_span) * SPAN_M,
-                    ANALYTIC_PARAMS,
-                )
+            grid[y_index, x_index] = gradient_function(
+                float(x_over_span) * SPAN_M,
+                float(y_over_span) * SPAN_M,
+                float(z_over_span) * SPAN_M,
+                ANALYTIC_PARAMS,
             )
     return grid
 

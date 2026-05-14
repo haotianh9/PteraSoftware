@@ -524,26 +524,43 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
         "single_body_thrust_N",
     )
     if analytic_x_values.size and analytic_y_values.size:
-        analytic_derivative_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
+        analytic_full_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
             analytic_x_values,
             analytic_y_values,
             z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
+            wake_only=False,
         )
         derivative_payload.append(
             (
                 analytic_x_values,
                 analytic_y_values,
-                analytic_derivative_grid,
-                "Analytical horseshoe reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
-                True,
+                analytic_full_grid,
+                "Analytical full horseshoe\nbound segment + trailing wake, Z/B = 0",
+                "full_horseshoe",
+                sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
+            )
+        )
+        analytic_wake_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
+            analytic_x_values,
+            analytic_y_values,
+            z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
+            wake_only=True,
+        )
+        derivative_payload.append(
+            (
+                analytic_x_values,
+                analytic_y_values,
+                analytic_wake_grid,
+                "Analytical wake-only\ntrailing tip-vortex pair, Z/B = 0",
+                "wake_only",
                 sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
             )
         )
 
-    fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), constrained_layout=True)
+    fig, axes = plt.subplots(3, 2, figsize=(13.0, 13.8), constrained_layout=True)
     flat_axes = axes.ravel()
     mesh = None
-    for ax, (x_values, y_values, grid, label, is_analytic, z_over_span) in zip(
+    for ax, (x_values, y_values, grid, label, analytic_kind, z_over_span) in zip(
         flat_axes, derivative_payload
     ):
         finite_values = grid[np.isfinite(grid)]
@@ -567,7 +584,7 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 linestyles="--",
                 linewidths=1.15,
             )
-        if is_analytic:
+        if analytic_kind == "wake_only":
             _draw_tip_pair_neutral_boundary(
                 ax,
                 y_values=y_values,
@@ -587,7 +604,7 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
     if mesh is None:
         raise RuntimeError("No data available for derivative maps.")
     fig.suptitle(
-        "Rear-Wing Streamwise Thrust Gradient with Tip-Vortex Neutral Boundary"
+        "Rear-Wing Streamwise Thrust Gradient: Simulation, Full Horseshoe, and Wake-Only"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, bbox_inches="tight")
@@ -718,7 +735,8 @@ def build_dataset(
             "analytical_comparison_note": (
                 "Streamwise-map analytical comparisons and the 9-panel stability "
                 "figure use the in-repo horseshoe/tip-vortex Biot-Savart model "
-                "from examples/horseshoe_tip_vortex_stability.py."
+                "from examples/horseshoe_tip_vortex_stability.py. The dT/d(X/B) "
+                "figure separates full-horseshoe and wake-only analytical panels."
             ),
             "removed_stale_outputs": removed,
             "rows": rows,
@@ -740,9 +758,9 @@ def build_dataset(
         "manuscript's bird 1 corresponds to the plotted rear body.\n\n"
         "Streamwise-map analytical comparisons and the 9-panel stability figure use "
         "the in-repo analytical horseshoe/tip-vortex Biot-Savart model in "
-        "`examples/horseshoe_tip_vortex_stability.py`. The dT/d(X/B) analytical "
-        "panel uses the full horseshoe dWbar/dX expression; the overlaid solid "
-        "line is the point-receiver tip-vortex-pair neutral contour.\n\n"
+        "`examples/horseshoe_tip_vortex_stability.py`. The dT/d(X/B) figure includes "
+        "separate full-horseshoe and wake-only analytical panels; the wake-only "
+        "panel also overlays the point-receiver tip-vortex-pair neutral contour.\n\n"
         "Generated files:\n"
         f"- `{csv_path.name}`: flat curated table.\n"
         f"- `{json_path.name}`: table plus source-selection metadata.\n"
