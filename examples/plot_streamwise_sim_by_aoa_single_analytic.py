@@ -292,14 +292,21 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         vmax=1.0 + ratio_half_range,
     )
 
-    fig = plt.figure(figsize=(13.5, 15.0), constrained_layout=True)
-    gridspec = fig.add_gridspec(4, 2, width_ratios=(1.0, 1.05))
+    fig, axes = plt.subplots(
+        3,
+        2,
+        figsize=(13.5, 13.0),
+        constrained_layout=True,
+    )
+    flat_axes = axes.ravel()
+    active_axes: list[plt.Axes] = []
     mesh = None
     for row_index, (label, x_values, y_values, grid) in enumerate(sim_payload):
-        ax = fig.add_subplot(gridspec[row_index, 0])
+        ax = flat_axes[row_index]
         mesh = _plot_grid(ax, x_values, y_values, grid, color_norm, label)
+        active_axes.append(ax)
 
-    analytic_ax = fig.add_subplot(gridspec[:, 1])
+    analytic_ax = flat_axes[len(sim_payload)]
     mesh = _plot_grid(
         analytic_ax,
         analytic_x,
@@ -316,8 +323,10 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
     )
+    active_axes.append(analytic_ax)
+    flat_axes[-1].axis("off")
 
-    cbar = fig.colorbar(mesh, ax=fig.axes, fraction=0.025, pad=0.015)
+    cbar = fig.colorbar(mesh, ax=active_axes, fraction=0.025, pad=0.015)
     cbar.set_label("Normalized Required Rear Thrust  $T_{rear}/T_{single}$")
     fig.suptitle(
         "Simulation AOA Slices with One Analytical Reference",
