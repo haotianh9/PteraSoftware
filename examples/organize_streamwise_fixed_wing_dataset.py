@@ -382,7 +382,11 @@ def _ratio_norm(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> TwoSlopeNo
         values.extend(float(row[key]) for row in rows if np.isfinite(float(row[key])))
     values_array = np.asarray(values, dtype=float)
     half_range = max(0.05, float(np.nanmax(np.abs(values_array - 1.0))))
-    return TwoSlopeNorm(vmin=1.0 - half_range, vcenter=1.0, vmax=1.0 + half_range)
+    return TwoSlopeNorm(
+        vmin=max(0.0, 1.0 - half_range),
+        vcenter=1.0,
+        vmax=1.0 + half_range,
+    )
 
 
 def _plot_ratio_maps(
@@ -463,23 +467,17 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 )
         derivative_payload.append((x_values, y_values, derivative_grid, label))
 
-    analytic_x_values, analytic_y_values, analytic_single_thrust_grid = _grid_from_rows(
+    analytic_x_values, analytic_y_values, _ = _grid_from_rows(
         rows,
         sim_analytic.ANALYTIC_REFERENCE_AOA_DEG,
         sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
         "single_body_thrust_N",
     )
     if analytic_x_values.size and analytic_y_values.size:
-        single_body_thrust_n = float(
-            np.nanmean(
-                analytic_single_thrust_grid[np.isfinite(analytic_single_thrust_grid)]
-            )
-        )
         analytic_thrust_grid = sim_analytic.analytical_rear_thrust_grid(
             analytic_x_values,
             analytic_y_values,
             z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-            single_body_thrust_n=single_body_thrust_n,
         )
         analytic_derivative_grid = np.full_like(analytic_thrust_grid, np.nan)
         for row_index in range(analytic_thrust_grid.shape[0]):
@@ -494,7 +492,7 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 analytic_x_values,
                 analytic_y_values,
                 analytic_derivative_grid,
-                "Analytical reference\nAOA-independent, Z/B = 0",
+                "Analytical reference\n$T=T_0-(L/U)\\bar W$, Z/B = 0",
             )
         )
 
@@ -647,9 +645,7 @@ def build_dataset(
                 "sim_by_aoa_single_analytic_reference": str(sim_analytic_path),
                 "single_wing_wake_slices_sim_vs_wbar_model": str(single_wing_wake_path),
             },
-            "analytical_model_parameters": sim_analytic.analytical_model_parameters(
-                single_body_thrust_n=metadata["baselines_by_aoa_N"].get(5.0)
-            ),
+            "analytical_model_parameters": sim_analytic.analytical_model_parameters(),
             "coordinate_convention": (
                 "Body 1 is front, Body 2 is rear, and X/B is front-minus-rear "
                 "streamwise spacing. Map manuscript bird 2 to plotted front body "

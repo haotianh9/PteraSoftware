@@ -5,6 +5,10 @@ does not include an angle-of-attack-dependent circulation law. It mirrors the
 ``Wbar_model`` parameters in
 ``/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/``
 and converts power change to thrust change with ``Delta T = Delta P / U``.
+
+The comparison figure plots the same quantity in all panels:
+``T_rear / T_single``.  The analytical panel uses the math-model drag scale as its
+single-wing baseline, not the simulation's bird-scale thrust.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ ANALYTIC_GRAVITY_MPS2 = 9.81
 ANALYTIC_LIFT_N = ANALYTIC_MASS_KG * ANALYTIC_GRAVITY_MPS2
 ANALYTIC_REFERENCE_SPEED_MPS = 1.0
 ANALYTIC_DB_PRIME_N_PER_MPS = 1.0
+ANALYTIC_BASELINE_THRUST_N = ANALYTIC_DB_PRIME_N_PER_MPS * ANALYTIC_REFERENCE_SPEED_MPS
 WAKE_UPWASH_AMPLITUDE_OVER_U = 0.15
 WAKE_X_GATE_OVER_SPAN = 0.25
 WAKE_X_RISE_OVER_SPAN = 1.0
@@ -124,23 +129,34 @@ def analytical_wbar_model_mps(
     )
 
 
-def _predict_rear_ratio_from_analytic_wbar(
+def analytical_delta_thrust_n(
     x_over_span: float,
     y_over_span: float,
     z_over_span: float,
-    single_body_thrust_n: float,
 ) -> float:
-    """Predict rear required-thrust ratio from the analytical Wbar model."""
-    if single_body_thrust_n <= 0.0:
-        return float("nan")
+    """Return analytical interaction thrust correction from Wbar."""
     wbar_mps = analytical_wbar_model_mps(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
         z_over_span=z_over_span,
     )
-    delta_thrust_n = -(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps
-    predicted_rear_thrust_n = single_body_thrust_n + delta_thrust_n
-    return float(predicted_rear_thrust_n / single_body_thrust_n)
+    return float(-(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps)
+
+
+def analytical_rear_thrust_ratio(
+    x_over_span: float,
+    y_over_span: float,
+    z_over_span: float,
+) -> float:
+    """Return analytical required-thrust ratio using the model baseline drag."""
+    delta_thrust_n = analytical_delta_thrust_n(
+        x_over_span=x_over_span,
+        y_over_span=y_over_span,
+        z_over_span=z_over_span,
+    )
+    return float(
+        (ANALYTIC_BASELINE_THRUST_N + delta_thrust_n) / ANALYTIC_BASELINE_THRUST_N
+    )
 
 
 def _condition_mask(data: np.ndarray, aoa_deg: float, z_over_span: float) -> np.ndarray:
@@ -192,16 +208,14 @@ def _analytic_reference_grid(
 
     x_values = np.array(sorted(np.unique(data["xB"][subset_indices])), dtype=float)
     y_values = np.array(sorted(np.unique(data["yB"][subset_indices])), dtype=float)
-    single_body_thrust_n = float(np.mean(data["single_body_thrust_N"][subset_indices]))
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
 
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
-            grid[y_index, x_index] = _predict_rear_ratio_from_analytic_wbar(
+            grid[y_index, x_index] = analytical_rear_thrust_ratio(
                 x_over_span=float(x_over_span),
                 y_over_span=float(y_over_span),
                 z_over_span=ANALYTIC_REFERENCE_Z_OVER_SPAN,
-                single_body_thrust_n=single_body_thrust_n,
             )
 
     return x_values, y_values, grid
@@ -212,25 +226,23 @@ def analytical_rear_thrust_grid(
     y_values: np.ndarray,
     *,
     z_over_span: float,
-    single_body_thrust_n: float,
 ) -> np.ndarray:
-    """Return analytical rear required-thrust values on an X/B-Y/B grid."""
+    """Return analytical rear required thrust on an X/B-Y/B grid."""
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
-            wbar_mps = analytical_wbar_model_mps(
-                x_over_span=float(x_over_span),
-                y_over_span=float(y_over_span),
-                z_over_span=float(z_over_span),
+            grid[y_index, x_index] = (
+                ANALYTIC_BASELINE_THRUST_N
+                + analytical_delta_thrust_n(
+                    x_over_span=float(x_over_span),
+                    y_over_span=float(y_over_span),
+                    z_over_span=float(z_over_span),
+                )
             )
-            delta_thrust_n = (
-                -(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps
-            )
-            grid[y_index, x_index] = single_body_thrust_n + delta_thrust_n
     return grid
 
 
-def analytical_model_parameters(single_body_thrust_n: float | None = None) -> dict:
+def analytical_model_parameters() -> dict:
     """Return the parameter choices used by the analytical reference model."""
     parameters = {
         "span_m": SPAN_M,
@@ -242,6 +254,8 @@ def analytical_model_parameters(single_body_thrust_n: float | None = None) -> di
         "lift_n": ANALYTIC_LIFT_N,
         "reference_speed_mps": ANALYTIC_REFERENCE_SPEED_MPS,
         "db_prime_n_per_mps": ANALYTIC_DB_PRIME_N_PER_MPS,
+        "baseline_thrust_n": ANALYTIC_BASELINE_THRUST_N,
+        "baseline_thrust_choice": "D_b(Ubar)=Db_prime*Ubar on the math-model scale",
         "w0_over_u": WAKE_UPWASH_AMPLITUDE_OVER_U,
         "x_gate_over_span": WAKE_X_GATE_OVER_SPAN,
         "x_rise_over_span": WAKE_X_RISE_OVER_SPAN,
@@ -254,11 +268,10 @@ def analytical_model_parameters(single_body_thrust_n: float | None = None) -> di
             "streamwise rise/decay, symmetric lateral upwash lobes, vertical decay"
         ),
         "power_to_thrust_relation": "Delta T = Delta P/U = -(L/U) * Wbar",
+        "plotted_analytical_quantity": "T_rear/T_single using the model baseline thrust",
         "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
         "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
     }
-    if single_body_thrust_n is not None:
-        parameters["single_body_thrust_n"] = float(single_body_thrust_n)
     return parameters
 
 
@@ -303,11 +316,12 @@ def _ratio_norm_from_grid(grid: np.ndarray) -> TwoSlopeNorm:
     finite_values = grid[np.isfinite(grid)]
     if finite_values.size == 0:
         return TwoSlopeNorm(vmin=0.95, vcenter=1.0, vmax=1.05)
-    ratio_half_range = max(0.05, float(np.nanmax(np.abs(finite_values - 1.0))))
+    half_range = max(0.05, float(np.nanmax(np.abs(finite_values - 1.0))))
+    vmin = max(0.0, 1.0 - half_range)
     return TwoSlopeNorm(
-        vmin=1.0 - ratio_half_range,
+        vmin=vmin,
         vcenter=1.0,
-        vmax=1.0 + ratio_half_range,
+        vmax=1.0 + half_range,
     )
 
 
@@ -332,14 +346,20 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
     fig, axes = plt.subplots(
         3,
         2,
-        figsize=(13.5, 13.0),
+        figsize=(13.5, 13.6),
         constrained_layout=True,
     )
+    fig.set_constrained_layout_pads(h_pad=0.07, w_pad=0.025, hspace=0.035)
     flat_axes = axes.ravel()
     for row_index, (label, x_values, y_values, grid) in enumerate(sim_payload):
         ax = flat_axes[row_index]
         mesh = _plot_grid(
-            ax, x_values, y_values, grid, _ratio_norm_from_grid(grid), label
+            ax,
+            x_values,
+            y_values,
+            grid,
+            _ratio_norm_from_grid(grid),
+            label,
         )
         cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
         cbar.set_label("$T_{rear}/T_{single}$")
@@ -351,14 +371,14 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         analytic_y,
         analytic_grid,
         _ratio_norm_from_grid(analytic_grid),
-        ("Single analytical reference\n" "AOA-independent Wbar model, Z/B = 0"),
+        ("Single analytical reference\n" "$T/T_0=1-(L/(U T_0))\\bar W$, Z/B = 0"),
     )
     cbar = fig.colorbar(mesh, ax=analytic_ax, fraction=0.046, pad=0.025)
     cbar.set_label("$T_{rear}/T_{single}$")
     analytic_ax.text(
         0.02,
         0.02,
-        "Shown once because Wbar is not AOA-dependent in this model.",
+        "Analytical baseline: T_single = D_b(Ubar) = 1 N.",
         transform=analytic_ax.transAxes,
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
@@ -366,8 +386,8 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
     flat_axes[-1].axis("off")
 
     fig.suptitle(
-        "Simulation AOA Slices with One Analytical Reference",
-        y=0.998,
+        "Rear-Wing Required Thrust Ratio with One Analytical Wbar Reference",
+        y=1.012,
     )
     output_figure.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_figure, bbox_inches="tight")

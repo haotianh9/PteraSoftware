@@ -134,14 +134,9 @@ def _model_wbar_grid(
     )
 
 
-def _row_norm(sim_grid: np.ndarray, model_grid: np.ndarray) -> TwoSlopeNorm:
-    """Return a row-local zero-centered color norm for a sim/model pair."""
-    finite_values = np.concatenate(
-        (
-            sim_grid[np.isfinite(sim_grid)].ravel(),
-            model_grid[np.isfinite(model_grid)].ravel(),
-        )
-    )
+def _panel_norm(grid: np.ndarray) -> TwoSlopeNorm:
+    """Return a panel-local zero-centered color norm."""
+    finite_values = grid[np.isfinite(grid)]
     if finite_values.size == 0:
         return TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0)
     vmax = max(1.0e-8, float(np.nanpercentile(np.abs(finite_values), 99.0)))
@@ -208,23 +203,24 @@ def _plot_pair(
     xlabel: str,
     ylabel: str,
 ) -> None:
-    """Plot one simulation/model row with one shared colorbar."""
-    norm = _row_norm(sim_grid, model_grid)
+    """Plot one simulation/model row with separate panel colorbars."""
+    sim_norm = _panel_norm(sim_grid)
+    model_norm = _panel_norm(model_grid)
     sim_mesh = axes[row, 0].pcolormesh(
         x_plot,
         y_plot,
         sim_grid,
         shading="auto",
         cmap="RdBu_r",
-        norm=norm,
+        norm=sim_norm,
     )
-    axes[row, 1].pcolormesh(
+    model_mesh = axes[row, 1].pcolormesh(
         x_plot,
         y_plot,
         model_grid,
         shading="auto",
         cmap="RdBu_r",
-        norm=norm,
+        norm=model_norm,
     )
     axes[row, 0].set_title(title_left)
     axes[row, 1].set_title(title_right)
@@ -233,13 +229,20 @@ def _plot_pair(
         axes[row, col].set_ylabel(ylabel)
         axes[row, col].set_aspect("equal", adjustable="box")
         axes[row, col].grid(False)
-    cbar = axes[row, 0].figure.colorbar(
+    sim_cbar = axes[row, 0].figure.colorbar(
         sim_mesh,
-        ax=axes[row, :],
-        fraction=0.035,
+        ax=axes[row, 0],
+        fraction=0.046,
         pad=0.012,
     )
-    cbar.set_label("vertical induced velocity / reduced upwash (m/s)")
+    sim_cbar.set_label("simulation $u_z$ (m/s)")
+    model_cbar = axes[row, 0].figure.colorbar(
+        model_mesh,
+        ax=axes[row, 1],
+        fraction=0.046,
+        pad=0.012,
+    )
+    model_cbar.set_label("reduced $\\bar W$ (m/s)")
 
 
 def build_figure(case_dir: Path, step: int, output: Path) -> None:
