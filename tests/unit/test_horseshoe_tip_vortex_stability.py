@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from examples import lifting_line_flat_wake_stability as model
+from examples import horseshoe_tip_vortex_stability as model
 
 
 class TestHorseshoeWakeModel(unittest.TestCase):
@@ -14,8 +14,11 @@ class TestHorseshoeWakeModel(unittest.TestCase):
 
     def setUp(self) -> None:
         """Use enough quadrature for sign-sensitive finite-wing checks."""
-        self.params = model.FlatWakeParams(quadrature_order=96, core_radius_m=1.0e-4)
-        self.singular_free_params = model.FlatWakeParams(
+        self.params = model.HorseshoeWakeParams(
+            quadrature_order=96,
+            core_radius_m=1.0e-4,
+        )
+        self.singular_free_params = model.HorseshoeWakeParams(
             quadrature_order=128,
             core_radius_m=0.0,
         )
@@ -84,6 +87,20 @@ class TestHorseshoeWakeModel(unittest.TestCase):
             x, y, z, self.singular_free_params
         )
         self.assertAlmostEqual(float(finite_difference), float(analytic), places=5)
+
+    def test_full_horseshoe_gradient_is_not_tip_pair_surrogate(self) -> None:
+        """The active model must retain the bound-vortex correction."""
+        x = 0.8 * self.params.span_m
+        y = 1.25 * self.params.span_m
+        z = 0.2 * self.params.span_m
+        full_horseshoe = model.lift_weighted_dwbardx_mps_per_m(x, y, z, self.params)
+        tip_pair_only = model.lift_weighted_tip_pair_dwbardx_mps_per_m(
+            x,
+            y,
+            z,
+            self.params,
+        )
+        self.assertNotAlmostEqual(float(full_horseshoe), float(tip_pair_only), places=6)
 
     def test_coordinate_convention_for_pair_terms(self) -> None:
         """Wminus and its X derivative should follow W(-X,-Y,-Z)."""

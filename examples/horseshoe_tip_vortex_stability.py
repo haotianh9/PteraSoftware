@@ -6,8 +6,8 @@ The full model contains the spanwise bound segment plus two semi-infinite
 trailing tip vortices.  The tip-vortex-pair limit is also exposed for the
 closed-form streamwise-neutral boundary.
 
-The historical module name is kept so existing plotting scripts continue to
-import one shared analytical source of truth.
+This is the single in-repo analytical source for the fixed-wing manuscript
+figures.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 
 
 @dataclass(frozen=True)
-class FlatWakeParams:
+class HorseshoeWakeParams:
     """Parameters for the constant-circulation horseshoe wake model."""
 
     span_m: float = 1.0
@@ -42,8 +42,6 @@ class FlatWakeParams:
     wake_num_segments: int = 128
 
 
-HorseshoeWakeParams = FlatWakeParams
-
 DEFAULT_OUTPUT_DIR = (
     Path(__file__).resolve().parents[1]
     / "output"
@@ -55,60 +53,51 @@ DEFAULT_OUTPUT_DIR = (
 DEFAULT_OUTPUT_FIGURE = DEFAULT_OUTPUT_DIR / "streamwise_stability_9panel.png"
 
 
-def aspect_ratio(params: FlatWakeParams) -> float:
+def aspect_ratio(params: HorseshoeWakeParams) -> float:
     """Return the rectangular-wing aspect ratio."""
     return params.span_m / params.chord_m
 
 
-def finite_wing_lift_slope_per_rad(params: FlatWakeParams) -> float:
+def finite_wing_lift_slope_per_rad(params: HorseshoeWakeParams) -> float:
     """Return a simple finite-wing lift slope used to set circulation scale."""
     ar = aspect_ratio(params)
     return 2.0 * np.pi * ar / (ar + 2.0)
 
 
-def lift_coefficient(params: FlatWakeParams) -> float:
+def lift_coefficient(params: HorseshoeWakeParams) -> float:
     """Return the reference lift coefficient at the selected angle of attack."""
     return finite_wing_lift_slope_per_rad(params) * np.deg2rad(params.aoa_deg)
 
 
-def lift_n(params: FlatWakeParams) -> float:
+def lift_n(params: HorseshoeWakeParams) -> float:
     """Return reference lift from the rectangular planform and AOA."""
     area = params.span_m * params.chord_m
     dynamic_pressure = 0.5 * params.rho_kg_m3 * params.ubar_mps**2
     return dynamic_pressure * area * lift_coefficient(params)
 
 
-def mass_kg(params: FlatWakeParams) -> float:
+def mass_kg(params: HorseshoeWakeParams) -> float:
     """Return the mass that would trim the reference lift in level flight."""
     return lift_n(params) / params.gravity_mps2
 
 
-def gamma0_m2_s(params: FlatWakeParams) -> float:
+def gamma0_m2_s(params: HorseshoeWakeParams) -> float:
     """Return the horseshoe circulation Gamma_t from L = rho U Gamma_t B."""
     return lift_n(params) / (params.rho_kg_m3 * params.ubar_mps * params.span_m)
 
 
-def baseline_thrust_n(params: FlatWakeParams) -> float:
+def baseline_thrust_n(params: HorseshoeWakeParams) -> float:
     """Return the analytical baseline drag scale used for stability damping."""
     return params.speed_damping_n_per_mps * params.ubar_mps
 
 
-def circulation_m2_s(eta_m: np.ndarray | float, params: FlatWakeParams) -> np.ndarray:
+def circulation_m2_s(
+    eta_m: np.ndarray | float, params: HorseshoeWakeParams
+) -> np.ndarray:
     """Return the constant bound circulation along the rectangular wing."""
     eta = np.asarray(eta_m, dtype=float)
     semispan = 0.5 * params.span_m
     return np.where(np.abs(eta) <= semispan, gamma0_m2_s(params), 0.0)
-
-
-def minus_dgamma_deta_mps(
-    eta_m: np.ndarray | float, params: FlatWakeParams
-) -> np.ndarray:
-    """Return the distributed trailing-sheet strength.
-
-    The horseshoe closure collapses the trailing sheet to two tip vortices, so
-    this compatibility helper is identically zero away from the singular tips.
-    """
-    return np.zeros_like(np.asarray(eta_m, dtype=float))
 
 
 @functools.lru_cache(maxsize=None)
@@ -135,7 +124,7 @@ def _broadcast_xyz(
 def _tip_offsets(
     y_m: np.ndarray,
     z_m: np.ndarray,
-    params: FlatWakeParams,
+    params: HorseshoeWakeParams,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Return right/left tip offsets and regularized squared radii."""
     semispan = 0.5 * params.span_m
@@ -151,7 +140,7 @@ def point_trailing_vertical_velocity_mps(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return W_tr from the two semi-infinite trailing tip vortices."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -170,7 +159,7 @@ def point_bound_vertical_velocity_mps(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return W_b from the finite spanwise bound vortex segment."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -188,7 +177,7 @@ def point_vertical_velocity_mps(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return full horseshoe vertical velocity W(X,Y,Z)."""
     return point_trailing_vertical_velocity_mps(
@@ -237,7 +226,7 @@ def point_velocity_mps(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return full induced velocity from a Biot-Savart horseshoe vortex.
 
@@ -275,7 +264,7 @@ def point_trailing_dwdx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return dW_tr/dX for the tip-vortex-pair limit."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -290,7 +279,7 @@ def point_bound_dwdx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return dW_b/dX for the finite bound segment."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -310,7 +299,7 @@ def point_dwdx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return dW/dX for the full horseshoe model."""
     return point_trailing_dwdx_mps_per_m(
@@ -318,7 +307,7 @@ def point_dwdx_mps_per_m(
     ) + point_bound_dwdx_mps_per_m(x_m, y_m, z_m, params)
 
 
-def _circulation_integral(params: FlatWakeParams) -> float:
+def _circulation_integral(params: HorseshoeWakeParams) -> float:
     """Return int Gamma dspan for the constant-circulation wing."""
     return gamma0_m2_s(params) * params.span_m
 
@@ -327,7 +316,7 @@ def lift_weighted_wbar_mps(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return the lift-weighted mean upwash received by a second wing."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -346,7 +335,7 @@ def lift_weighted_dwbardx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Wbar)/dX for the full horseshoe model."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -363,7 +352,7 @@ def lift_weighted_tip_pair_dwbardx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Wbar)/dX using only the trailing tip-vortex pair."""
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
@@ -384,7 +373,7 @@ def lift_weighted_dwbardx_biot_savart_fd_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Wbar)/dX by finite differencing Biot-Savart-evaluated Wbar."""
     step = max(
@@ -412,7 +401,7 @@ def pair_wake_terms(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
     *,
     gradient_method: str = "analytic",
 ) -> dict[str, np.ndarray]:
@@ -420,15 +409,12 @@ def pair_wake_terms(
     x, y, z = _broadcast_xyz(x_m, y_m, z_m)
     w_plus = lift_weighted_wbar_mps(x, y, z, params)
     w_minus = lift_weighted_wbar_mps(-x, -y, -z, params)
-    if gradient_method in {"analytic", "compact_kernel"}:
+    if gradient_method == "analytic":
         gradient_function = lift_weighted_dwbardx_mps_per_m
     elif gradient_method == "biot_savart_fd":
         gradient_function = lift_weighted_dwbardx_biot_savart_fd_mps_per_m
     else:
-        raise ValueError(
-            "gradient_method must be 'analytic', 'compact_kernel', or "
-            "'biot_savart_fd'."
-        )
+        raise ValueError("gradient_method must be 'analytic' or 'biot_savart_fd'.")
     dw_plus = gradient_function(x, y, z, params)
     dw_minus = -gradient_function(-x, -y, -z, params)
     return {
@@ -441,7 +427,7 @@ def pair_wake_terms(
 
 def power_change_w(
     wbar_mps: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return Delta P = -L Wbar."""
     return -lift_n(params) * np.asarray(wbar_mps, dtype=float)
@@ -449,7 +435,7 @@ def power_change_w(
 
 def thrust_change_n(
     wbar_mps: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return Delta T = Delta P / U = -(L/U) Wbar."""
     return power_change_w(wbar_mps, params) / params.ubar_mps
@@ -457,7 +443,7 @@ def thrust_change_n(
 
 def thrust_gradient_n_per_m(
     dwbardx_mps_per_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Delta T)/dX = -(L/U) dWbar/dX."""
     return (
@@ -467,7 +453,7 @@ def thrust_gradient_n_per_m(
 
 def thrust_gradient_per_x_over_span_n(
     dwbardx_mps_per_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Delta T)/d(X/B), the plotted streamwise thrust gradient."""
     return params.span_m * thrust_gradient_n_per_m(dwbardx_mps_per_m, params)
@@ -477,7 +463,7 @@ def lift_weighted_thrust_gradient_per_x_over_span_n(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Delta T)/d(X/B) directly from the horseshoe dWbar/dX."""
     return thrust_gradient_per_x_over_span_n(
@@ -490,7 +476,7 @@ def lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return d(Delta T)/d(X/B) from the lift-weighted tip-vortex-pair model."""
     return thrust_gradient_per_x_over_span_n(
@@ -503,7 +489,7 @@ def stability_margin_per_s(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
     z_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
     *,
     gradient_method: str = "analytic",
 ) -> np.ndarray:
@@ -516,7 +502,7 @@ def stability_margin_per_s(
 def _stability_margin_from_terms(
     x: np.ndarray,
     terms: dict[str, np.ndarray],
-    params: FlatWakeParams,
+    params: HorseshoeWakeParams,
 ) -> np.ndarray:
     """Return stability margin using already-computed wake terms."""
     this_lift = lift_n(params)
@@ -547,7 +533,7 @@ def compute_fields(
     x_m: np.ndarray,
     y_m: np.ndarray,
     z_m: np.ndarray,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
     *,
     gradient_method: str = "analytic",
 ) -> dict[str, np.ndarray]:
@@ -567,19 +553,9 @@ def compute_fields(
     }
 
 
-def d_min_m(y_m: np.ndarray | float, params: FlatWakeParams = FlatWakeParams()):
-    """Return the minimum possible spanwise element separation."""
-    return np.maximum(np.abs(y_m) - params.span_m, 0.0)
-
-
-def d_max_m(y_m: np.ndarray | float, params: FlatWakeParams = FlatWakeParams()):
-    """Return the maximum possible spanwise element separation."""
-    return np.abs(y_m) + params.span_m
-
-
 def critical_radius_tip_pair_m(
     y_m: np.ndarray | float,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return R_c(|Y|) for the point-receiver tip-vortex-pair boundary."""
     y_abs = np.abs(np.asarray(y_m, dtype=float))
@@ -596,7 +572,7 @@ def critical_radius_tip_pair_m(
 def tip_pair_neutral_x_over_span(
     y_over_span: np.ndarray | float,
     z_over_span: np.ndarray | float = 0.0,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
 ) -> np.ndarray:
     """Return X/B on the point-tip-pair neutral boundary."""
     y_m = np.asarray(y_over_span, dtype=float) * params.span_m
@@ -606,7 +582,9 @@ def tip_pair_neutral_x_over_span(
     return np.where(rc2_minus_z2 > 0.0, np.sqrt(rc2_minus_z2) / params.span_m, np.nan)
 
 
-def model_parameters_dict(params: FlatWakeParams = FlatWakeParams()) -> dict[str, Any]:
+def model_parameters_dict(
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
+) -> dict[str, Any]:
     """Return JSON-friendly model parameters."""
     return {
         "model": "constant-circulation full horseshoe vortex plus tip-vortex boundary",
@@ -656,7 +634,7 @@ def _style() -> None:
 
 
 def make_slices(
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
     n: int = 141,
     xlim_over_span: tuple[float, float] = (-2.0, 8.0),
     ylim_over_span: tuple[float, float] = (-5.0, 5.0),
@@ -726,7 +704,7 @@ def _symmetric_limits(
 def _draw_leader_wing_marker(
     ax: plt.Axes,
     plane: str,
-    params: FlatWakeParams,
+    params: HorseshoeWakeParams,
 ) -> None:
     """Draw the leader/source wing footprint in normalized coordinates."""
     half_span = 0.5
@@ -754,7 +732,7 @@ def _draw_leader_wing_marker(
 
 def plot_stability_maps(
     output_path: Path = DEFAULT_OUTPUT_FIGURE,
-    params: FlatWakeParams = FlatWakeParams(),
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
     n: int = 141,
 ) -> Path:
     """Save the 3-by-3 power and streamwise-stability figure."""

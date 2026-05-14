@@ -2,7 +2,7 @@
 
 The analytical panel is intentionally shown only once. It uses the in-repo
 constant-circulation horseshoe/tip-vortex model implemented in
-``lifting_line_flat_wake_stability.py`` and converts power change to thrust change
+``horseshoe_tip_vortex_stability.py`` and converts power change to thrust change
 with ``Delta T = Delta P / U``.
 
 The comparison figure plots the same quantity in all panels:
@@ -21,9 +21,9 @@ import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
 try:
-    from examples import lifting_line_flat_wake_stability as flat_wake
+    from examples import horseshoe_tip_vortex_stability as horseshoe_model
 except ImportError:  # pragma: no cover - supports direct script execution
-    import lifting_line_flat_wake_stability as flat_wake
+    import horseshoe_tip_vortex_stability as horseshoe_model
 
 DEFAULT_OUTPUT_DIR = (
     Path(__file__).resolve().parents[1]
@@ -52,7 +52,7 @@ SIMULATION_CONDITIONS: tuple[tuple[float, float, str], ...] = (
 )
 ANALYTIC_REFERENCE_AOA_DEG = 5.0
 ANALYTIC_REFERENCE_Z_OVER_SPAN = 0.0
-ANALYTIC_PARAMS = flat_wake.FlatWakeParams(
+ANALYTIC_PARAMS = horseshoe_model.HorseshoeWakeParams(
     span_m=SPAN_M,
     chord_m=ROOT_CHORD_M,
     aoa_deg=ANALYTIC_REFERENCE_AOA_DEG,
@@ -97,7 +97,7 @@ def analytical_wbar_model_mps(
 ) -> float:
     """Evaluate the analytical lift-weighted upwash from the horseshoe model."""
     return float(
-        flat_wake.lift_weighted_wbar_mps(
+        horseshoe_model.lift_weighted_wbar_mps(
             x_over_span * SPAN_M,
             y_over_span * SPAN_M,
             z_over_span * SPAN_M,
@@ -117,7 +117,7 @@ def analytical_delta_thrust_n(
         y_over_span=y_over_span,
         z_over_span=z_over_span,
     )
-    return float(flat_wake.thrust_change_n(wbar_mps, ANALYTIC_PARAMS))
+    return float(horseshoe_model.thrust_change_n(wbar_mps, ANALYTIC_PARAMS))
 
 
 def analytical_rear_thrust_ratio(
@@ -128,7 +128,7 @@ def analytical_rear_thrust_ratio(
 ) -> float:
     """Return analytical required-thrust ratio using the selected baseline."""
     if baseline_thrust_n is None:
-        baseline_thrust_n = flat_wake.baseline_thrust_n(ANALYTIC_PARAMS)
+        baseline_thrust_n = horseshoe_model.baseline_thrust_n(ANALYTIC_PARAMS)
     delta_thrust_n = analytical_delta_thrust_n(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
@@ -210,7 +210,7 @@ def analytical_rear_thrust_grid(
 ) -> np.ndarray:
     """Return analytical rear required thrust on an X/B-Y/B grid."""
     if baseline_thrust_n is None:
-        baseline_thrust_n = flat_wake.baseline_thrust_n(ANALYTIC_PARAMS)
+        baseline_thrust_n = horseshoe_model.baseline_thrust_n(ANALYTIC_PARAMS)
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
@@ -228,12 +228,12 @@ def analytical_rear_dthrust_dxb_grid(
     *,
     z_over_span: float,
 ) -> np.ndarray:
-    """Return analytical rear dT/d(X/B) from the tip-vortex-pair dWbar/dX."""
+    """Return analytical rear dT/d(X/B) from the full horseshoe dWbar/dX."""
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
             grid[y_index, x_index] = (
-                flat_wake.lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n(
+                horseshoe_model.lift_weighted_thrust_gradient_per_x_over_span_n(
                     float(x_over_span) * SPAN_M,
                     float(y_over_span) * SPAN_M,
                     float(z_over_span) * SPAN_M,
@@ -254,10 +254,10 @@ def _ratio_cbar_ticks(norm: TwoSlopeNorm) -> list[float]:
 
 def analytical_model_parameters() -> dict:
     """Return the parameter choices used by the analytical reference model."""
-    parameters = flat_wake.model_parameters_dict(ANALYTIC_PARAMS)
+    parameters = horseshoe_model.model_parameters_dict(ANALYTIC_PARAMS)
     parameters.update(
         {
-            "source_file": "examples/lifting_line_flat_wake_stability.py",
+            "source_file": "examples/horseshoe_tip_vortex_stability.py",
             "baseline_thrust_choice": (
                 "Analytical comparison ratios use the matching simulation "
                 "single-wing baseline from the curated CSV."

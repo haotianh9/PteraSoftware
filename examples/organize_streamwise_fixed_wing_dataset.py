@@ -395,7 +395,7 @@ def _draw_tip_pair_neutral_boundary(
     if not np.isfinite(y_min) or not np.isfinite(y_max) or y_min >= y_max:
         return
     y_dense = np.linspace(y_min, y_max, 300)
-    x_boundary = sim_analytic.flat_wake.tip_pair_neutral_x_over_span(
+    x_boundary = sim_analytic.horseshoe_model.tip_pair_neutral_x_over_span(
         y_dense,
         z_over_span,
         sim_analytic.ANALYTIC_PARAMS,
@@ -534,7 +534,7 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 analytic_x_values,
                 analytic_y_values,
                 analytic_derivative_grid,
-                "Analytical tip-vortex reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
+                "Analytical horseshoe reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
                 True,
                 sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
             )
@@ -664,7 +664,7 @@ def build_dataset(
         output_path=figures_dir / "z0_rear_dthrust_dxb_by_aoa.png",
     )
     # Keep comparison figures in the same curated figure directory.
-    import lifting_line_flat_wake_stability as flat_wake
+    import horseshoe_tip_vortex_stability as horseshoe_model
     import plot_single_wing_wake_four_panel as single_wing_wake
     import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
 
@@ -672,7 +672,7 @@ def build_dataset(
     sim_analytic.build_figure(input_csv=csv_path, output_figure=sim_analytic_path)
 
     stability_9panel_path = figures_dir / "streamwise_stability_9panel.png"
-    flat_wake.plot_stability_maps(output_path=stability_9panel_path)
+    horseshoe_model.plot_stability_maps(output_path=stability_9panel_path)
 
     single_wing_case_dir = single_wing_wake.DEFAULT_CASE_DIR
     raw_single_wing_case_dir = (
@@ -718,7 +718,7 @@ def build_dataset(
             "analytical_comparison_note": (
                 "Streamwise-map analytical comparisons and the 9-panel stability "
                 "figure use the in-repo horseshoe/tip-vortex Biot-Savart model "
-                "from examples/lifting_line_flat_wake_stability.py."
+                "from examples/horseshoe_tip_vortex_stability.py."
             ),
             "removed_stale_outputs": removed,
             "rows": rows,
@@ -740,9 +740,9 @@ def build_dataset(
         "manuscript's bird 1 corresponds to the plotted rear body.\n\n"
         "Streamwise-map analytical comparisons and the 9-panel stability figure use "
         "the in-repo analytical horseshoe/tip-vortex Biot-Savart model in "
-        "`examples/lifting_line_flat_wake_stability.py`. The dT/d(X/B) analytical "
-        "panel uses the derived horseshoe dWbar/dX expression; the overlaid solid "
-        "boundary is the point-receiver tip-vortex-pair neutral contour.\n\n"
+        "`examples/horseshoe_tip_vortex_stability.py`. The dT/d(X/B) analytical "
+        "panel uses the full horseshoe dWbar/dX expression; the overlaid solid "
+        "line is the point-receiver tip-vortex-pair neutral contour.\n\n"
         "Generated files:\n"
         f"- `{csv_path.name}`: flat curated table.\n"
         f"- `{json_path.name}`: table plus source-selection metadata.\n"

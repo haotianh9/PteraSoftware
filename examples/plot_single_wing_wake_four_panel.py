@@ -10,13 +10,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import lifting_line_flat_wake_stability as flat_wake
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import TwoSlopeNorm
 
 from pterasoftware import _aerodynamics_functions
+
+try:
+    from examples import horseshoe_tip_vortex_stability as horseshoe_model
+except ImportError:  # pragma: no cover - supports direct script execution
+    import horseshoe_tip_vortex_stability as horseshoe_model
 
 _STREAMWISE_ROOT = (
     Path(__file__).resolve().parents[1]
@@ -150,7 +154,7 @@ def _analytical_horseshoe_velocity_bp1(
 ) -> np.ndarray:
     """Return the shared manuscript horseshoe model velocity in the BP1 frame."""
     points = np.asarray(points_bp1, dtype=float)
-    params = flat_wake.FlatWakeParams(
+    params = horseshoe_model.HorseshoeWakeParams(
         span_m=SPAN_M,
         chord_m=CHORD_M,
         ubar_mps=speed_mps,
@@ -158,7 +162,7 @@ def _analytical_horseshoe_velocity_bp1(
         quadrature_order=num_quad,
         core_radius_m=ANALYTICAL_CORE_RADIUS_M,
     )
-    return flat_wake.point_velocity_mps(
+    return horseshoe_model.point_velocity_mps(
         points[:, 0],
         points[:, 1],
         points[:, 2],
