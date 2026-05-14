@@ -623,7 +623,7 @@ def build_dataset(
     if raw_single_wing_case_dir.exists():
         single_wing_case_dir = raw_single_wing_case_dir
     single_wing_wake_path = (
-        figures_dir / "single_wing_wake_eight_panel_sim_vs_analytic.png"
+        figures_dir / "single_wing_wake_slices_sim_vs_wbar_model.png"
     )
     single_wing_wake.build_figure(
         case_dir=single_wing_case_dir,
@@ -645,12 +645,21 @@ def build_dataset(
                     figures_dir / "z0_rear_dthrust_dxb_by_aoa.png"
                 ),
                 "sim_by_aoa_single_analytic_reference": str(sim_analytic_path),
-                "single_wing_wake_eight_panel_sim_vs_analytic": str(
-                    single_wing_wake_path
-                ),
+                "single_wing_wake_slices_sim_vs_wbar_model": str(single_wing_wake_path),
             },
             "analytical_model_parameters": sim_analytic.analytical_model_parameters(
                 single_body_thrust_n=metadata["baselines_by_aoa_N"].get(5.0)
+            ),
+            "coordinate_convention": (
+                "Body 1 is front, Body 2 is rear, and X/B is front-minus-rear "
+                "streamwise spacing. Map manuscript bird 2 to plotted front body "
+                "if the manuscript uses X=x_2-x_1 with bird 2 ahead."
+            ),
+            "analytical_comparison_note": (
+                "Analytical comparisons use the reduced Wbar_model from the external "
+                "math_models script. The single-wing wake-slice figure compares "
+                "simulated local u_z to that scalar reduced upwash model and does not "
+                "use any other analytical closure."
             ),
             "removed_stale_outputs": removed,
             "rows": rows,
@@ -665,6 +674,16 @@ def build_dataset(
         "far-lateral single-wing baseline for each AOA.  Values below 1 mean "
         "lower required thrust than the single-wing baseline; values above 1 "
         "mean higher required thrust.\n\n"
+        "Coordinate convention in these simulation outputs: Body 1 is the front "
+        "wing, Body 2 is the rear wing, and `X/B` is the streamwise front-minus-rear "
+        "spacing. If the manuscript writes `X=x_2-x_1` with bird 2 ahead, then the "
+        "manuscript's bird 2 corresponds to the plotted front body and the "
+        "manuscript's bird 1 corresponds to the plotted rear body.\n\n"
+        "Analytical comparisons use the reduced `Wbar_model` from "
+        "`/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/"
+        "lifting_line_streamwise_stability.py`. The single-wing wake-slice figure "
+        "compares simulated local `u_z` to this scalar reduced upwash model; it does "
+        "not use any other analytical closure.\n\n"
         "Generated files:\n"
         f"- `{csv_path.name}`: flat curated table.\n"
         f"- `{json_path.name}`: table plus source-selection metadata.\n"
@@ -672,7 +691,7 @@ def build_dataset(
         "- `figures/aoa05_thrust_ratio_front_rear_by_z.png`\n"
         "- `figures/z0_rear_dthrust_dxb_by_aoa.png`\n"
         "- `figures/sim_by_aoa_single_analytic_reference.png`\n"
-        "- `figures/single_wing_wake_eight_panel_sim_vs_analytic.png`\n"
+        "- `figures/single_wing_wake_slices_sim_vs_wbar_model.png`\n"
         "\nRebuild command:\n\n"
         "```bash\n"
         ".venv/bin/python examples/organize_streamwise_fixed_wing_dataset.py\n"
