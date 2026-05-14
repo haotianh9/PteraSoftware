@@ -149,6 +149,7 @@ Draw.webp
 * Force Coefficients.png
 * Moments.png
 * Moment Coefficients.png
+/output/
 
 # This symlink folder contains reference documentation that shouldn't be uploaded.
 /docs/private
