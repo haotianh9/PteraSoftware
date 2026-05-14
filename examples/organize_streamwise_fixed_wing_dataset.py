@@ -478,6 +478,15 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
             cmap="RdBu_r",
             norm=norm,
         )
+        if np.nanmin(grid) <= 0.0 <= np.nanmax(grid):
+            ax.contour(
+                x_values,
+                y_values,
+                grid,
+                levels=[0.0],
+                colors="black",
+                linewidths=1.15,
+            )
         _draw_front_wing(ax)
         ax.set_title(label)
         ax.set_xlabel("X/B")
