@@ -1,9 +1,10 @@
 """Plot simulation AOA slices with one AOA-independent analytical reference.
 
-The analytical panel is intentionally shown only once.  The lightweight model used here
-does not include an angle-of-attack-dependent circulation law; it uses one calibrated
-tip-vortex strength and one single-wing normalization.  Repeating it for AOA 5, 10,
-and 15 deg would imply physics that the model does not currently contain.
+The analytical panel is intentionally shown only once. The lightweight model used here
+does not include an angle-of-attack-dependent circulation law. It mirrors the
+``Wbar_model`` parameters in
+``/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/``
+and converts power change to thrust change with ``Delta T = Delta P / U``.
 """
 
 from __future__ import annotations
@@ -32,12 +33,24 @@ DEFAULT_OUTPUT_FIGURE = (
 SPAN_M = 1.0
 SEMI_SPAN_M = SPAN_M / 2.0
 ROOT_CHORD_M = 0.1
-AIR_DENSITY_KG_M3 = 1.225
-REFERENCE_SPEED_MPS = 1.0
-WEIGHT_N = 0.0235
 
-# Calibrated once against AOA=5, Z/B=0, X/B<=5 to avoid per-panel overfitting.
-TIP_VORTEX_GAMMA_SCALE = 0.665
+# Analytical reference parameters mirrored from lifting_line_streamwise_stability.py.
+ANALYTIC_MODEL_SOURCE = (
+    "/home/hht/Dropbox/Research/PostDoc_IRPHE/Code/Bird_flock/math_models/"
+    "lifting_line_streamwise_stability.py"
+)
+ANALYTIC_MASS_KG = 1.0
+ANALYTIC_GRAVITY_MPS2 = 9.81
+ANALYTIC_LIFT_N = ANALYTIC_MASS_KG * ANALYTIC_GRAVITY_MPS2
+ANALYTIC_REFERENCE_SPEED_MPS = 1.0
+ANALYTIC_DB_PRIME_N_PER_MPS = 1.0
+WAKE_UPWASH_AMPLITUDE_OVER_U = 0.15
+WAKE_X_GATE_OVER_SPAN = 0.25
+WAKE_X_RISE_OVER_SPAN = 1.0
+WAKE_X_DECAY_OVER_SPAN = 8.0
+WAKE_Y_LOBE_OVER_SPAN = 0.65
+WAKE_Y_WIDTH_OVER_SPAN = 0.25
+WAKE_Z_WIDTH_OVER_SPAN = 0.35
 
 # Keep X/B=7 now that the long convergence reruns are in the curated dataset.
 X_MAX_OVER_SPAN = 7.0
@@ -49,12 +62,6 @@ SIMULATION_CONDITIONS: tuple[tuple[float, float, str], ...] = (
 )
 ANALYTIC_REFERENCE_AOA_DEG = 5.0
 ANALYTIC_REFERENCE_Z_OVER_SPAN = 0.0
-
-
-def analytical_tip_vortex_gamma_m2_s() -> float:
-    """Return the calibrated analytical tip-vortex circulation strength."""
-    gamma_base_m2_s = WEIGHT_N / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M)
-    return float(TIP_VORTEX_GAMMA_SCALE * gamma_base_m2_s)
 
 
 def _apply_constant_style() -> None:
@@ -88,56 +95,33 @@ def _grid_edges(values: np.ndarray) -> np.ndarray:
     return np.concatenate(([first], mids, [last]))
 
 
-def _tip_vortex_vertical_velocity(
-    x_m: float,
-    y_m: float,
-    z_m: float,
-    gamma_tip_m2_s: float,
-) -> float:
-    """Return induced vertical velocity from two semi-infinite tip vortices."""
-    velocity_z_mps = 0.0
-    # Circulation signs chosen to produce downwash near center and upwash outboard.
-    for y0_m, gamma_m2_s in (
-        (+SEMI_SPAN_M, -gamma_tip_m2_s),
-        (-SEMI_SPAN_M, +gamma_tip_m2_s),
-    ):
-        dy_m = y_m - y0_m
-        dz_m = z_m
-        radial_sq_m2 = dy_m * dy_m + dz_m * dz_m
-        if radial_sq_m2 < 1.0e-12:
-            continue
-        finite_segment_factor = (1.0 + x_m / np.sqrt(x_m * x_m + radial_sq_m2)) / (
-            4.0 * np.pi
-        )
-        velocity_z_mps += -gamma_m2_s * dy_m / radial_sq_m2 * finite_segment_factor
-    return float(velocity_z_mps)
-
-
-def _lift_weighted_wbar_mps(
+def analytical_wbar_model_mps(
     x_over_span: float,
     y_over_span: float,
     z_over_span: float,
-    gamma_tip_m2_s: float,
 ) -> float:
-    """Compute lift-weighted Wbar over the receiver span."""
-    xi_m = np.linspace(-SEMI_SPAN_M, +SEMI_SPAN_M, 241)
-    weights = np.sqrt(np.maximum(0.0, 1.0 - (2.0 * xi_m / SPAN_M) ** 2))
+    """Evaluate the analytical lift-weighted upwash model from math_models."""
     x_m = x_over_span * SPAN_M
     y_m = y_over_span * SPAN_M
     z_m = z_over_span * SPAN_M
-    w_samples = np.array(
-        [
-            _tip_vortex_vertical_velocity(
-                x_m=x_m,
-                y_m=y_m + this_xi_m,
-                z_m=z_m,
-                gamma_tip_m2_s=gamma_tip_m2_s,
-            )
-            for this_xi_m in xi_m
-        ],
-        dtype=float,
+    upwash_amplitude_mps = WAKE_UPWASH_AMPLITUDE_OVER_U * ANALYTIC_REFERENCE_SPEED_MPS
+    x_gate_m = WAKE_X_GATE_OVER_SPAN * SPAN_M
+    x_rise_m = WAKE_X_RISE_OVER_SPAN * SPAN_M
+    x_decay_m = WAKE_X_DECAY_OVER_SPAN * SPAN_M
+    y_lobe_m = WAKE_Y_LOBE_OVER_SPAN * SPAN_M
+    y_width_m = WAKE_Y_WIDTH_OVER_SPAN * SPAN_M
+    z_width_m = WAKE_Z_WIDTH_OVER_SPAN * SPAN_M
+
+    gate = 1.0 / (1.0 + np.exp(-x_m / x_gate_m))
+    downstream_x_m = max(x_m, 0.0)
+    streamwise_shape = (1.0 - np.exp(-downstream_x_m / x_rise_m)) * np.exp(
+        -downstream_x_m / x_decay_m
     )
-    return float(np.average(w_samples, weights=weights))
+    lateral_shape = np.exp(-(((abs(y_m) - y_lobe_m) / y_width_m) ** 2))
+    vertical_shape = np.exp(-((z_m / z_width_m) ** 2))
+    return float(
+        upwash_amplitude_mps * gate * streamwise_shape * lateral_shape * vertical_shape
+    )
 
 
 def _predict_rear_ratio_from_analytic_wbar(
@@ -145,18 +129,16 @@ def _predict_rear_ratio_from_analytic_wbar(
     y_over_span: float,
     z_over_span: float,
     single_body_thrust_n: float,
-    gamma_tip_m2_s: float,
 ) -> float:
     """Predict rear required-thrust ratio from the analytical Wbar model."""
     if single_body_thrust_n <= 0.0:
         return float("nan")
-    wbar_mps = _lift_weighted_wbar_mps(
+    wbar_mps = analytical_wbar_model_mps(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
         z_over_span=z_over_span,
-        gamma_tip_m2_s=gamma_tip_m2_s,
     )
-    delta_thrust_n = -(WEIGHT_N / REFERENCE_SPEED_MPS) * wbar_mps
+    delta_thrust_n = -(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps
     predicted_rear_thrust_n = single_body_thrust_n + delta_thrust_n
     return float(predicted_rear_thrust_n / single_body_thrust_n)
 
@@ -196,7 +178,6 @@ def _simulation_grid(
 
 def _analytic_reference_grid(
     data: np.ndarray,
-    gamma_tip_m2_s: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return a single AOA-independent analytical reference grid."""
     subset_indices = np.where(
@@ -221,7 +202,6 @@ def _analytic_reference_grid(
                 y_over_span=float(y_over_span),
                 z_over_span=ANALYTIC_REFERENCE_Z_OVER_SPAN,
                 single_body_thrust_n=single_body_thrust_n,
-                gamma_tip_m2_s=gamma_tip_m2_s,
             )
 
     return x_values, y_values, grid
@@ -233,19 +213,19 @@ def analytical_rear_thrust_grid(
     *,
     z_over_span: float,
     single_body_thrust_n: float,
-    gamma_tip_m2_s: float,
 ) -> np.ndarray:
     """Return analytical rear required-thrust values on an X/B-Y/B grid."""
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
-            wbar_mps = _lift_weighted_wbar_mps(
+            wbar_mps = analytical_wbar_model_mps(
                 x_over_span=float(x_over_span),
                 y_over_span=float(y_over_span),
                 z_over_span=float(z_over_span),
-                gamma_tip_m2_s=gamma_tip_m2_s,
             )
-            delta_thrust_n = -(WEIGHT_N / REFERENCE_SPEED_MPS) * wbar_mps
+            delta_thrust_n = (
+                -(ANALYTIC_LIFT_N / ANALYTIC_REFERENCE_SPEED_MPS) * wbar_mps
+            )
             grid[y_index, x_index] = single_body_thrust_n + delta_thrust_n
     return grid
 
@@ -256,17 +236,24 @@ def analytical_model_parameters(single_body_thrust_n: float | None = None) -> di
         "span_m": SPAN_M,
         "semispan_m": SEMI_SPAN_M,
         "root_chord_m": ROOT_CHORD_M,
-        "air_density_kg_m3": AIR_DENSITY_KG_M3,
-        "reference_speed_mps": REFERENCE_SPEED_MPS,
-        "weight_n": WEIGHT_N,
-        "tip_vortex_gamma_scale": TIP_VORTEX_GAMMA_SCALE,
-        "gamma_base_m2_s": WEIGHT_N
-        / (AIR_DENSITY_KG_M3 * REFERENCE_SPEED_MPS * SPAN_M),
-        "gamma_tip_m2_s": analytical_tip_vortex_gamma_m2_s(),
-        "spanwise_samples": 241,
-        "span_loading": "elliptic-like sqrt(1 - (2 xi / B)^2)",
-        "vortex_model": "two semi-infinite tip vortices starting at x=0 and extending downstream",
-        "power_to_thrust_relation": "Delta T = -(weight/U) * Wbar",
+        "source_file": ANALYTIC_MODEL_SOURCE,
+        "mass_kg": ANALYTIC_MASS_KG,
+        "gravity_mps2": ANALYTIC_GRAVITY_MPS2,
+        "lift_n": ANALYTIC_LIFT_N,
+        "reference_speed_mps": ANALYTIC_REFERENCE_SPEED_MPS,
+        "db_prime_n_per_mps": ANALYTIC_DB_PRIME_N_PER_MPS,
+        "w0_over_u": WAKE_UPWASH_AMPLITUDE_OVER_U,
+        "x_gate_over_span": WAKE_X_GATE_OVER_SPAN,
+        "x_rise_over_span": WAKE_X_RISE_OVER_SPAN,
+        "x_decay_over_span": WAKE_X_DECAY_OVER_SPAN,
+        "y_lobe_over_span": WAKE_Y_LOBE_OVER_SPAN,
+        "y_width_over_span": WAKE_Y_WIDTH_OVER_SPAN,
+        "z_width_over_span": WAKE_Z_WIDTH_OVER_SPAN,
+        "wake_model": (
+            "direct lift-weighted Wbar_model: downstream logistic gate, "
+            "streamwise rise/decay, symmetric lateral upwash lobes, vertical decay"
+        ),
+        "power_to_thrust_relation": "Delta T = Delta P/U = -(L/U) * Wbar",
         "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
         "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
     }
@@ -311,6 +298,19 @@ def _plot_grid(
     return mesh
 
 
+def _ratio_norm_from_grid(grid: np.ndarray) -> TwoSlopeNorm:
+    """Return a panel-local diverging norm centered at the single-wing value."""
+    finite_values = grid[np.isfinite(grid)]
+    if finite_values.size == 0:
+        return TwoSlopeNorm(vmin=0.95, vcenter=1.0, vmax=1.05)
+    ratio_half_range = max(0.05, float(np.nanmax(np.abs(finite_values - 1.0))))
+    return TwoSlopeNorm(
+        vmin=1.0 - ratio_half_range,
+        vcenter=1.0,
+        vmax=1.0 + ratio_half_range,
+    )
+
+
 def build_figure(input_csv: Path, output_figure: Path) -> None:
     """Build and save the simulation-plus-one-analytic-reference figure."""
     _apply_constant_style()
@@ -322,28 +322,12 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         encoding=None,
     )
 
-    gamma_tip_m2_s = analytical_tip_vortex_gamma_m2_s()
-
     sim_payload = []
-    all_values: list[np.ndarray] = []
     for aoa_deg, z_over_span, label in SIMULATION_CONDITIONS:
         x_values, y_values, grid = _simulation_grid(data, aoa_deg, z_over_span)
         sim_payload.append((label, x_values, y_values, grid))
-        all_values.append(grid[np.isfinite(grid)])
 
-    analytic_x, analytic_y, analytic_grid = _analytic_reference_grid(
-        data=data,
-        gamma_tip_m2_s=gamma_tip_m2_s,
-    )
-    all_values.append(analytic_grid[np.isfinite(analytic_grid)])
-    finite_values = np.concatenate(all_values)
-    ratio_dev = np.max(np.abs(finite_values - 1.0))
-    ratio_half_range = max(0.05, float(ratio_dev))
-    color_norm = TwoSlopeNorm(
-        vmin=1.0 - ratio_half_range,
-        vcenter=1.0,
-        vmax=1.0 + ratio_half_range,
-    )
+    analytic_x, analytic_y, analytic_grid = _analytic_reference_grid(data=data)
 
     fig, axes = plt.subplots(
         3,
@@ -352,12 +336,13 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         constrained_layout=True,
     )
     flat_axes = axes.ravel()
-    active_axes: list[plt.Axes] = []
-    mesh = None
     for row_index, (label, x_values, y_values, grid) in enumerate(sim_payload):
         ax = flat_axes[row_index]
-        mesh = _plot_grid(ax, x_values, y_values, grid, color_norm, label)
-        active_axes.append(ax)
+        mesh = _plot_grid(
+            ax, x_values, y_values, grid, _ratio_norm_from_grid(grid), label
+        )
+        cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
+        cbar.set_label("$T_{rear}/T_{single}$")
 
     analytic_ax = flat_axes[len(sim_payload)]
     mesh = _plot_grid(
@@ -365,22 +350,21 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         analytic_x,
         analytic_y,
         analytic_grid,
-        color_norm,
-        ("Single analytical reference\n" "AOA-independent tip-vortex model, Z/B = 0"),
+        _ratio_norm_from_grid(analytic_grid),
+        ("Single analytical reference\n" "AOA-independent Wbar model, Z/B = 0"),
     )
+    cbar = fig.colorbar(mesh, ax=analytic_ax, fraction=0.046, pad=0.025)
+    cbar.set_label("$T_{rear}/T_{single}$")
     analytic_ax.text(
         0.02,
         0.02,
-        "Shown once because Gamma is not AOA-dependent in this model.",
+        "Shown once because Wbar is not AOA-dependent in this model.",
         transform=analytic_ax.transAxes,
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
     )
-    active_axes.append(analytic_ax)
     flat_axes[-1].axis("off")
 
-    cbar = fig.colorbar(mesh, ax=active_axes, fraction=0.025, pad=0.015)
-    cbar.set_label("Normalized Required Rear Thrust  $T_{rear}/T_{single}$")
     fig.suptitle(
         "Simulation AOA Slices with One Analytical Reference",
         y=0.998,

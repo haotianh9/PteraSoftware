@@ -480,7 +480,6 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
             analytic_y_values,
             z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
             single_body_thrust_n=single_body_thrust_n,
-            gamma_tip_m2_s=sim_analytic.analytical_tip_vortex_gamma_m2_s(),
         )
         analytic_derivative_grid = np.full_like(analytic_thrust_grid, np.nan)
         for row_index in range(analytic_thrust_grid.shape[0]):
