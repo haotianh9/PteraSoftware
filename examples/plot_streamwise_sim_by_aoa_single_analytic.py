@@ -228,12 +228,12 @@ def analytical_rear_dthrust_dxb_grid(
     *,
     z_over_span: float,
 ) -> np.ndarray:
-    """Return analytical rear dT/d(X/B) from the horseshoe dWbar/dX."""
+    """Return analytical rear dT/d(X/B) from the tip-vortex-pair dWbar/dX."""
     grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
     for y_index, y_over_span in enumerate(y_values):
         for x_index, x_over_span in enumerate(x_values):
             grid[y_index, x_index] = (
-                flat_wake.lift_weighted_thrust_gradient_per_x_over_span_n(
+                flat_wake.lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n(
                     float(x_over_span) * SPAN_M,
                     float(y_over_span) * SPAN_M,
                     float(z_over_span) * SPAN_M,
@@ -241,6 +241,15 @@ def analytical_rear_dthrust_dxb_grid(
                 )
             )
     return grid
+
+
+def _ratio_cbar_ticks(norm: TwoSlopeNorm) -> list[float]:
+    """Return ratio colorbar ticks with explicit sub-unity marks."""
+    dense_under_one = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    high_step = 0.5 if norm.vmax > 2.5 else 0.25
+    above_one = np.arange(1.0 + high_step, norm.vmax + 0.5 * high_step, high_step)
+    ticks = np.unique(np.concatenate((dense_under_one, above_one)))
+    return [float(tick) for tick in ticks if norm.vmin <= tick <= norm.vmax]
 
 
 def analytical_model_parameters() -> dict:
@@ -360,6 +369,7 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
             label,
         )
         cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
+        cbar.set_ticks(_ratio_cbar_ticks(mesh.norm))
         cbar.set_label("$T_{rear}/T_{single}$")
 
     analytic_ax = flat_axes[len(sim_payload)]
@@ -375,6 +385,7 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         ),
     )
     cbar = fig.colorbar(mesh, ax=analytic_ax, fraction=0.046, pad=0.025)
+    cbar.set_ticks(_ratio_cbar_ticks(mesh.norm))
     cbar.set_label("$T_{rear}/T_{single}$")
     analytic_ax.text(
         0.02,

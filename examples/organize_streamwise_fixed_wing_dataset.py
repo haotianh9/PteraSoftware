@@ -413,6 +413,15 @@ def _draw_tip_pair_neutral_boundary(
         )
 
 
+def _ratio_cbar_ticks(norm: TwoSlopeNorm) -> list[float]:
+    """Return ratio colorbar ticks with explicit ticks between zero and one."""
+    dense_under_one = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    high_step = 0.5 if norm.vmax > 2.5 else 0.25
+    above_one = np.arange(1.0 + high_step, norm.vmax + 0.5 * high_step, high_step)
+    ticks = np.unique(np.concatenate((dense_under_one, above_one)))
+    return [float(tick) for tick in ticks if norm.vmin <= tick <= norm.vmax]
+
+
 def _ratio_norm(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> TwoSlopeNorm:
     """Return a centered norm for all requested ratio values."""
     values = []
@@ -475,6 +484,7 @@ def _plot_ratio_maps(
     if mesh is None:
         raise RuntimeError("No data available for ratio maps.")
     cbar = fig.colorbar(mesh, ax=axes, fraction=0.025, pad=0.015)
+    cbar.set_ticks(_ratio_cbar_ticks(norm))
     cbar.set_label("Required thrust / single-wing thrust (white = 1)")
     fig.suptitle(title)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -503,7 +513,9 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 derivative_grid[row_index, valid] = np.gradient(
                     thrust_grid[row_index, valid], x_values[valid]
                 )
-        derivative_payload.append((x_values, y_values, derivative_grid, label))
+        derivative_payload.append(
+            (x_values, y_values, derivative_grid, label, False, z_over_span)
+        )
 
     analytic_x_values, analytic_y_values, _ = _grid_from_rows(
         rows,
@@ -522,14 +534,18 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 analytic_x_values,
                 analytic_y_values,
                 analytic_derivative_grid,
-                "Analytical horseshoe reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
+                "Analytical tip-vortex reference\n$dT/d(X/B)=-(L/U)B\\,\\partial_X\\bar W$, Z/B = 0",
+                True,
+                sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
             )
         )
 
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.2), constrained_layout=True)
     flat_axes = axes.ravel()
     mesh = None
-    for ax, (x_values, y_values, grid, label) in zip(flat_axes, derivative_payload):
+    for ax, (x_values, y_values, grid, label, is_analytic, z_over_span) in zip(
+        flat_axes, derivative_payload
+    ):
         finite_values = grid[np.isfinite(grid)]
         panel_vmax = max(1.0e-12, float(np.nanmax(np.abs(finite_values))))
         panel_norm = TwoSlopeNorm(vmin=-panel_vmax, vcenter=0.0, vmax=panel_vmax)
@@ -551,11 +567,12 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 linestyles="--",
                 linewidths=1.15,
             )
-        _draw_tip_pair_neutral_boundary(
-            ax,
-            y_values=y_values,
-            z_over_span=0.0,
-        )
+        if is_analytic:
+            _draw_tip_pair_neutral_boundary(
+                ax,
+                y_values=y_values,
+                z_over_span=z_over_span,
+            )
         _draw_front_wing(ax)
         ax.set_title(label)
         ax.set_xlabel("X/B")

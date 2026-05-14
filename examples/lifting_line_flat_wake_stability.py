@@ -359,6 +359,27 @@ def lift_weighted_dwbardx_mps_per_m(
     return total / gamma_integral
 
 
+def lift_weighted_tip_pair_dwbardx_mps_per_m(
+    x_m: np.ndarray | float,
+    y_m: np.ndarray | float,
+    z_m: np.ndarray | float,
+    params: FlatWakeParams = FlatWakeParams(),
+) -> np.ndarray:
+    """Return d(Wbar)/dX using only the trailing tip-vortex pair."""
+    x, y, z = _broadcast_xyz(x_m, y_m, z_m)
+    xi, weights = _quadrature(params.span_m, params.quadrature_order)
+    gamma = gamma0_m2_s(params)
+    gamma_integral = _circulation_integral(params)
+    total = np.zeros_like(x, dtype=float)
+    for this_xi, this_weight in zip(xi, weights, strict=True):
+        total += (
+            this_weight
+            * gamma
+            * point_trailing_dwdx_mps_per_m(x, y + this_xi, z, params)
+        )
+    return total / gamma_integral
+
+
 def lift_weighted_dwbardx_biot_savart_fd_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,
@@ -461,6 +482,19 @@ def lift_weighted_thrust_gradient_per_x_over_span_n(
     """Return d(Delta T)/d(X/B) directly from the horseshoe dWbar/dX."""
     return thrust_gradient_per_x_over_span_n(
         lift_weighted_dwbardx_mps_per_m(x_m, y_m, z_m, params),
+        params,
+    )
+
+
+def lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n(
+    x_m: np.ndarray | float,
+    y_m: np.ndarray | float,
+    z_m: np.ndarray | float,
+    params: FlatWakeParams = FlatWakeParams(),
+) -> np.ndarray:
+    """Return d(Delta T)/d(X/B) from the lift-weighted tip-vortex-pair model."""
+    return thrust_gradient_per_x_over_span_n(
+        lift_weighted_tip_pair_dwbardx_mps_per_m(x_m, y_m, z_m, params),
         params,
     )
 
