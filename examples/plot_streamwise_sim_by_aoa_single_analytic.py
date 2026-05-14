@@ -267,6 +267,12 @@ def analytical_model_parameters() -> dict:
             "direct lift-weighted Wbar_model: downstream logistic gate, "
             "streamwise rise/decay, symmetric lateral upwash lobes, vertical decay"
         ),
+        "wake_model_sign_limitation": (
+            "The external Wbar_model is nonnegative by construction, so the "
+            "analytical T_rear/T_single panel can show thrust saving only; red "
+            "T/T_single > 1 regions require adding a signed downwash term or using "
+            "a different analytical wake closure."
+        ),
         "power_to_thrust_relation": "Delta T = Delta P/U = -(L/U) * Wbar",
         "plotted_analytical_quantity": "T_rear/T_single using the model baseline thrust",
         "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
@@ -279,7 +285,7 @@ def _draw_source_wing_outline(ax: plt.Axes) -> None:
     """Draw source-wing footprint in normalized coordinates."""
     wing_x = np.array([0.0, ROOT_CHORD_M / SPAN_M, ROOT_CHORD_M / SPAN_M, 0.0, 0.0])
     wing_y = np.array([-0.5, -0.5, 0.5, 0.5, -0.5])
-    ax.plot(wing_x, wing_y, color="black", linewidth=1.0, alpha=0.75)
+    ax.fill(wing_x, wing_y, color="black", alpha=0.94, zorder=8)
 
 
 def _plot_grid(
@@ -302,7 +308,7 @@ def _plot_grid(
         norm=color_norm,
     )
     _draw_source_wing_outline(ax)
-    ax.set_xlim(x_edges[0], x_edges[-1])
+    ax.set_xlim(min(-0.02, x_edges[0]), x_edges[-1])
     ax.set_ylim(y_edges[0], y_edges[-1])
     ax.set_title(title)
     ax.set_xlabel("X/B")

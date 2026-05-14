@@ -372,7 +372,7 @@ def _draw_front_wing(ax: plt.Axes) -> None:
     """Draw the body-1/front wing footprint in normalized coordinates."""
     wing_x = np.array([0.0, CHORD_M / SPAN_M, CHORD_M / SPAN_M, 0.0, 0.0])
     wing_y = np.array([-0.5, -0.5, 0.5, 0.5, -0.5])
-    ax.plot(wing_x, wing_y, color="black", linewidth=1.0)
+    ax.fill(wing_x, wing_y, color="black", alpha=0.94, zorder=8)
 
 
 def _ratio_norm(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> TwoSlopeNorm:
@@ -431,7 +431,7 @@ def _plot_ratio_maps(
             ax.set_title(f"{label} | {body_label}")
             ax.set_xlabel("X/B")
             ax.set_ylabel("Y/B")
-            ax.set_xlim(_edges(x_values)[0], _edges(x_values)[-1])
+            ax.set_xlim(min(-0.02, _edges(x_values)[0]), _edges(x_values)[-1])
             ax.set_ylim(_edges(y_values)[0], _edges(y_values)[-1])
             ax.grid(False)
     if mesh is None:
