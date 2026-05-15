@@ -331,6 +331,27 @@ def lift_weighted_wbar_mps(
     return total / gamma_integral
 
 
+def lift_weighted_tip_pair_wbar_mps(
+    x_m: np.ndarray | float,
+    y_m: np.ndarray | float,
+    z_m: np.ndarray | float,
+    params: HorseshoeWakeParams = HorseshoeWakeParams(),
+) -> np.ndarray:
+    """Return lift-weighted upwash using only the trailing tip-vortex pair."""
+    x, y, z = _broadcast_xyz(x_m, y_m, z_m)
+    xi, weights = _quadrature(params.span_m, params.quadrature_order)
+    gamma = gamma0_m2_s(params)
+    gamma_integral = _circulation_integral(params)
+    total = np.zeros_like(x, dtype=float)
+    for this_xi, this_weight in zip(xi, weights, strict=True):
+        total += (
+            this_weight
+            * gamma
+            * point_trailing_vertical_velocity_mps(x, y + this_xi, z, params)
+        )
+    return total / gamma_integral
+
+
 def lift_weighted_dwbardx_mps_per_m(
     x_m: np.ndarray | float,
     y_m: np.ndarray | float,

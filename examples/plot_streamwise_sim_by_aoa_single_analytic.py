@@ -1,9 +1,8 @@
-"""Plot simulation AOA slices with one analytical horseshoe reference.
+"""Plot simulation AOA slices with full and wake-only analytical references.
 
-The analytical panel is intentionally shown only once. It uses the in-repo
-constant-circulation horseshoe/tip-vortex model implemented in
-``horseshoe_tip_vortex_stability.py`` and converts power change to thrust change
-with ``Delta T = Delta P / U``.
+The analytical panels use the in-repo constant-circulation horseshoe/tip-vortex
+model implemented in ``horseshoe_tip_vortex_stability.py`` and convert power
+change to thrust change with ``Delta T = Delta P / U``.
 
 The comparison figure plots the same quantity in all panels:
 ``T_rear / T_single``.  The analytical panel uses the matching single-wing
@@ -94,10 +93,16 @@ def analytical_wbar_model_mps(
     x_over_span: float,
     y_over_span: float,
     z_over_span: float,
+    wake_only: bool = False,
 ) -> float:
-    """Evaluate the analytical lift-weighted upwash from the horseshoe model."""
+    """Evaluate analytical lift-weighted upwash."""
+    wbar_function = (
+        horseshoe_model.lift_weighted_tip_pair_wbar_mps
+        if wake_only
+        else horseshoe_model.lift_weighted_wbar_mps
+    )
     return float(
-        horseshoe_model.lift_weighted_wbar_mps(
+        wbar_function(
             x_over_span * SPAN_M,
             y_over_span * SPAN_M,
             z_over_span * SPAN_M,
@@ -110,12 +115,14 @@ def analytical_delta_thrust_n(
     x_over_span: float,
     y_over_span: float,
     z_over_span: float,
+    wake_only: bool = False,
 ) -> float:
     """Return analytical interaction thrust correction from Wbar."""
     wbar_mps = analytical_wbar_model_mps(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
         z_over_span=z_over_span,
+        wake_only=wake_only,
     )
     return float(horseshoe_model.thrust_change_n(wbar_mps, ANALYTIC_PARAMS))
 
@@ -125,6 +132,7 @@ def analytical_rear_thrust_ratio(
     y_over_span: float,
     z_over_span: float,
     baseline_thrust_n: float | None = None,
+    wake_only: bool = False,
 ) -> float:
     """Return analytical required-thrust ratio using the selected baseline."""
     if baseline_thrust_n is None:
@@ -133,6 +141,7 @@ def analytical_rear_thrust_ratio(
         x_over_span=x_over_span,
         y_over_span=y_over_span,
         z_over_span=z_over_span,
+        wake_only=wake_only,
     )
     return float((baseline_thrust_n + delta_thrust_n) / baseline_thrust_n)
 
@@ -172,8 +181,10 @@ def _simulation_grid(
 
 def _analytic_reference_grid(
     data: np.ndarray,
+    *,
+    wake_only: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return a single AOA-independent analytical reference grid."""
+    """Return an AOA-independent analytical reference grid."""
     subset_indices = np.where(
         _condition_mask(
             data,
@@ -196,6 +207,7 @@ def _analytic_reference_grid(
                 y_over_span=float(y_over_span),
                 z_over_span=ANALYTIC_REFERENCE_Z_OVER_SPAN,
                 baseline_thrust_n=baseline_thrust_n,
+                wake_only=wake_only,
             )
 
     return x_values, y_values, grid
@@ -207,6 +219,7 @@ def analytical_rear_thrust_grid(
     *,
     z_over_span: float,
     baseline_thrust_n: float | None = None,
+    wake_only: bool = False,
 ) -> np.ndarray:
     """Return analytical rear required thrust on an X/B-Y/B grid."""
     if baseline_thrust_n is None:
@@ -218,6 +231,7 @@ def analytical_rear_thrust_grid(
                 x_over_span=float(x_over_span),
                 y_over_span=float(y_over_span),
                 z_over_span=float(z_over_span),
+                wake_only=wake_only,
             )
     return grid
 
@@ -279,6 +293,10 @@ def analytical_model_parameters() -> dict:
                 "T_rear/T_single using the same single-wing normalization as "
                 "the simulation panels"
             ),
+            "analytical_reference_panels": (
+                "full horseshoe (bound segment plus trailing wake) and wake-only "
+                "trailing tip-vortex pair"
+            ),
             "analytic_reference_aoa_deg": ANALYTIC_REFERENCE_AOA_DEG,
             "analytic_reference_z_over_span": ANALYTIC_REFERENCE_Z_OVER_SPAN,
         }
@@ -337,7 +355,7 @@ def _ratio_norm_from_grid(grid: np.ndarray) -> TwoSlopeNorm:
 
 
 def build_figure(input_csv: Path, output_figure: Path) -> None:
-    """Build and save the simulation-plus-one-analytic-reference figure."""
+    """Build and save the simulation plus analytical reference figure."""
     _apply_constant_style()
     data = np.genfromtxt(
         input_csv,
@@ -352,7 +370,14 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         x_values, y_values, grid = _simulation_grid(data, aoa_deg, z_over_span)
         sim_payload.append((label, x_values, y_values, grid))
 
-    analytic_x, analytic_y, analytic_grid = _analytic_reference_grid(data=data)
+    analytic_x, analytic_y, analytic_full_grid = _analytic_reference_grid(
+        data=data,
+        wake_only=False,
+    )
+    _, _, analytic_wake_grid = _analytic_reference_grid(
+        data=data,
+        wake_only=True,
+    )
 
     fig, axes = plt.subplots(
         3,
@@ -381,12 +406,9 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
         analytic_ax,
         analytic_x,
         analytic_y,
-        analytic_grid,
-        _ratio_norm_from_grid(analytic_grid),
-        (
-            "Single analytical horseshoe reference\n"
-            "$T/T_{single}=1+\\Delta T/T_{single}$, Z/B = 0"
-        ),
+        analytic_full_grid,
+        _ratio_norm_from_grid(analytic_full_grid),
+        ("Analytical full horseshoe\n" "bound segment + trailing wake, Z/B = 0"),
     )
     cbar = fig.colorbar(mesh, ax=analytic_ax, fraction=0.046, pad=0.025)
     cbar.set_ticks(_ratio_cbar_ticks(mesh.norm))
@@ -394,15 +416,27 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
     analytic_ax.text(
         0.02,
         0.02,
-        "Analytical reference: full horseshoe wake, AOA 5 deg.",
+        "Reference AOA 5 deg.",
         transform=analytic_ax.transAxes,
         fontsize=9,
         bbox={"facecolor": "white", "alpha": 0.86, "edgecolor": "none"},
     )
-    flat_axes[-1].axis("off")
+
+    wake_ax = flat_axes[len(sim_payload) + 1]
+    mesh = _plot_grid(
+        wake_ax,
+        analytic_x,
+        analytic_y,
+        analytic_wake_grid,
+        _ratio_norm_from_grid(analytic_wake_grid),
+        ("Analytical wake-only\n" "trailing tip-vortex pair, Z/B = 0"),
+    )
+    cbar = fig.colorbar(mesh, ax=wake_ax, fraction=0.046, pad=0.025)
+    cbar.set_ticks(_ratio_cbar_ticks(mesh.norm))
+    cbar.set_label("$T_{rear}/T_{single}$")
 
     fig.suptitle(
-        "Rear-Wing Required Thrust Ratio with One Horseshoe Analytical Reference",
+        "Rear-Wing Required Thrust Ratio: Simulation, Full Horseshoe, and Wake-Only",
         y=1.012,
     )
     output_figure.parent.mkdir(parents=True, exist_ok=True)
@@ -413,7 +447,7 @@ def build_figure(input_csv: Path, output_figure: Path) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Plot simulation AOA slices with one analytical reference."
+        description="Plot simulation AOA slices with full and wake-only references."
     )
     parser.add_argument(
         "--input-csv",
