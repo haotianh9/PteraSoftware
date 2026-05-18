@@ -30,6 +30,15 @@ DEFAULT_OUTPUT_DIR = DEFAULT_RESULTS_ROOT / "curated_fixed_wing_dataset"
 SPAN_M = 1.0
 CHORD_M = 0.1
 AOA_VALUES = (5.0, 10.0, 15.0)
+THEORY_REFERENCE_AOA_DEG = 5.0
+THEORY_REFERENCE_Z_OVER_SPAN = 0.0
+Z0_AOA_CONDITIONS: tuple[tuple[float, float, str], ...] = (
+    (5.0, 0.0, "AOA 5 deg, Z/B = 0"),
+    (10.0, 0.0, "AOA 10 deg, Z/B = 0"),
+    (15.0, 0.0, "AOA 15 deg, Z/B = 0"),
+)
+MAP_FIGSIZE = (16.0, 18.0)
+REAR_MAP_FIGSIZE = (MAP_FIGSIZE[0] / 2.0, MAP_FIGSIZE[1])
 
 
 def _raw_results_root(results_root: Path) -> Path:
@@ -53,6 +62,7 @@ def _style() -> None:
         {
             "figure.dpi": 220,
             "savefig.dpi": 220,
+            "savefig.bbox": "standard",
             "font.size": 10,
             "axes.titlesize": 11,
             "axes.labelsize": 10,
@@ -413,11 +423,125 @@ def _draw_tip_pair_neutral_boundary(
         )
 
 
+def _horseshoe_module():
+    """Import the analytical horseshoe/tip-vortex model."""
+    try:
+        from examples import horseshoe_tip_vortex_stability as horseshoe_model
+    except ImportError:  # pragma: no cover - supports direct script execution
+        import horseshoe_tip_vortex_stability as horseshoe_model
+    return horseshoe_model
+
+
+def _analytical_params_for_aoa(aoa_deg: float):
+    """Return analytical horseshoe parameters for the plotted AOA."""
+    horseshoe_model = _horseshoe_module()
+    return horseshoe_model.HorseshoeWakeParams(
+        span_m=SPAN_M,
+        chord_m=CHORD_M,
+        aoa_deg=float(aoa_deg),
+    )
+
+
+def _condition_baseline_thrust(
+    rows: list[dict[str, Any]],
+    aoa_deg: float,
+    z_over_span: float,
+) -> float:
+    """Return the matching simulation single-wing thrust normalization."""
+    values = [
+        float(row["single_body_thrust_N"])
+        for row in rows
+        if np.isclose(float(row["aoa_deg"]), aoa_deg)
+        and np.isclose(float(row["zB"]), z_over_span)
+    ]
+    if not values:
+        raise RuntimeError(
+            f"No baseline thrust found for AOA={aoa_deg}, Z/B={z_over_span}."
+        )
+    return float(np.mean(values))
+
+
+def _analytical_ratio_grid(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    aoa_deg: float,
+    z_over_span: float,
+    baseline_thrust_n: float,
+    *,
+    body: str,
+    wake_only: bool,
+) -> np.ndarray:
+    """Return front/rear analytical thrust ratio on the simulation grid."""
+    horseshoe_model = _horseshoe_module()
+    params = _analytical_params_for_aoa(aoa_deg)
+    wbar_function = (
+        horseshoe_model.lift_weighted_tip_pair_wbar_mps
+        if wake_only
+        else horseshoe_model.lift_weighted_wbar_mps
+    )
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
+    for y_index, y_over_span in enumerate(y_values):
+        for x_index, x_over_span in enumerate(x_values):
+            if body == "front":
+                source_x = -float(x_over_span) * SPAN_M
+                source_y = -float(y_over_span) * SPAN_M
+                source_z = -float(z_over_span) * SPAN_M
+            elif body == "rear":
+                source_x = float(x_over_span) * SPAN_M
+                source_y = float(y_over_span) * SPAN_M
+                source_z = float(z_over_span) * SPAN_M
+            else:
+                raise ValueError("body must be 'front' or 'rear'.")
+            wbar_mps = wbar_function(
+                source_x,
+                source_y,
+                source_z,
+                params,
+            )
+            delta_thrust_n = horseshoe_model.thrust_change_n(wbar_mps, params)
+            grid[y_index, x_index] = (
+                baseline_thrust_n + float(delta_thrust_n)
+            ) / baseline_thrust_n
+    return grid
+
+
+def _analytical_rear_dthrust_dxb_grid(
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    aoa_deg: float,
+    z_over_span: float,
+    *,
+    wake_only: bool,
+) -> np.ndarray:
+    """Return analytical rear dT/d(X/B) on the simulation grid."""
+    horseshoe_model = _horseshoe_module()
+    params = _analytical_params_for_aoa(aoa_deg)
+    gradient_function = (
+        horseshoe_model.lift_weighted_tip_pair_thrust_gradient_per_x_over_span_n
+        if wake_only
+        else horseshoe_model.lift_weighted_thrust_gradient_per_x_over_span_n
+    )
+    grid = np.full((y_values.size, x_values.size), np.nan, dtype=float)
+    for y_index, y_over_span in enumerate(y_values):
+        for x_index, x_over_span in enumerate(x_values):
+            grid[y_index, x_index] = gradient_function(
+                float(x_over_span) * SPAN_M,
+                float(y_over_span) * SPAN_M,
+                float(z_over_span) * SPAN_M,
+                params,
+            )
+    return grid
+
+
 def _ratio_cbar_ticks(norm: TwoSlopeNorm) -> list[float]:
     """Return ratio colorbar ticks with explicit ticks between zero and one."""
     dense_under_one = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
-    high_step = 0.5 if norm.vmax > 2.5 else 0.25
-    above_one = np.arange(1.0 + high_step, norm.vmax + 0.5 * high_step, high_step)
+    if norm.vmax <= 2.0:
+        above_one = np.arange(1.25, norm.vmax + 0.125, 0.25)
+    elif norm.vmax <= 4.0:
+        above_one = np.arange(1.5, norm.vmax + 0.25, 0.5)
+    else:
+        above_one = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
     ticks = np.unique(np.concatenate((dense_under_one, above_one)))
     return [float(tick) for tick in ticks if norm.vmin <= tick <= norm.vmax]
 
@@ -436,36 +560,96 @@ def _ratio_norm(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> TwoSlopeNo
     )
 
 
+def _ratio_norm_for_grid(grid: np.ndarray) -> TwoSlopeNorm:
+    """Return a panel-local ratio norm centered at the single-wing value."""
+    finite_values = grid[np.isfinite(grid)]
+    if finite_values.size == 0:
+        half_range = 0.05
+    else:
+        half_range = max(0.05, float(np.nanmax(np.abs(finite_values - 1.0))))
+    return TwoSlopeNorm(
+        vmin=max(0.0, 1.0 - half_range),
+        vcenter=1.0,
+        vmax=1.0 + half_range,
+    )
+
+
+def _derivative_norm_for_grid(grid: np.ndarray) -> TwoSlopeNorm:
+    """Return a panel-local dT/dX norm centered on neutral stability."""
+    finite_values = grid[np.isfinite(grid)]
+    if finite_values.size == 0:
+        half_range = 1.0
+    else:
+        half_range = max(1.0e-12, float(np.nanmax(np.abs(finite_values))))
+    return TwoSlopeNorm(vmin=-half_range, vcenter=0.0, vmax=half_range)
+
+
+def _plot_zero_contour(
+    ax: plt.Axes,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    grid: np.ndarray,
+) -> None:
+    """Draw the zero contour when the gridded field crosses zero."""
+    if (
+        x_values.size < 2
+        or y_values.size < 2
+        or not np.any(np.isfinite(grid))
+        or not (np.nanmin(grid) <= 0.0 <= np.nanmax(grid))
+    ):
+        return
+    ax.contour(
+        x_values,
+        y_values,
+        grid,
+        levels=[0.0],
+        colors="#222222",
+        linestyles="--",
+        linewidths=1.15,
+        zorder=9,
+    )
+
+
 def _plot_ratio_maps(
     rows: list[dict[str, Any]],
     output_path: Path,
     conditions: tuple[tuple[float, float, str], ...],
     title: str,
+    *,
+    include_analytical: bool = False,
 ) -> None:
     """Plot front and rear thrust ratios for selected slices."""
-    norm = _ratio_norm(rows, ("front_ratio", "rear_ratio"))
+    column_specs = [("front", "Front"), ("rear", "Rear")]
+    num_rows = len(conditions) + (2 if include_analytical else 0)
     fig, axes = plt.subplots(
-        len(conditions),
-        2,
-        figsize=(13.0, 4.0 * len(conditions)),
+        num_rows,
+        len(column_specs),
+        figsize=MAP_FIGSIZE if include_analytical else (13.0, 4.0 * len(conditions)),
         sharex=False,
         sharey=False,
         constrained_layout=True,
     )
-    if len(conditions) == 1:
+    if num_rows == 1:
         axes = np.asarray([axes])
     mesh = None
     for row_id, (aoa, z_over_span, label) in enumerate(conditions):
-        for col_id, (value_key, body_label) in enumerate(
-            (("front_ratio", "Body 1 front"), ("rear_ratio", "Body 2 rear"))
-        ):
+        for col_id, (body, body_label) in enumerate(column_specs):
             ax = axes[row_id, col_id]
+            value_key = "front_ratio" if body == "front" else "rear_ratio"
             x_values, y_values, grid = _grid_from_rows(
                 rows, aoa, z_over_span, value_key
             )
             if grid.size == 0:
                 ax.set_axis_off()
                 continue
+            norm = (
+                _ratio_norm_for_grid(grid)
+                if include_analytical
+                else _ratio_norm(
+                    rows,
+                    ("front_ratio", "rear_ratio"),
+                )
+            )
             mesh = ax.pcolormesh(
                 _edges(x_values),
                 _edges(y_values),
@@ -475,34 +659,96 @@ def _plot_ratio_maps(
                 norm=norm,
             )
             _draw_front_wing(ax)
-            ax.set_title(f"{label} | {body_label}")
+            ax.set_title(f"{label} | Simulation {body_label.lower()}")
             ax.set_xlabel("X/B")
             ax.set_ylabel("Y/B")
             ax.set_xlim(min(-0.02, _edges(x_values)[0]), _edges(x_values)[-1])
             ax.set_ylim(_edges(y_values)[0], _edges(y_values)[-1])
             ax.grid(False)
+            if include_analytical:
+                cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.02)
+                cbar.set_ticks(_ratio_cbar_ticks(norm))
+                cbar.set_label("$T/T_{single}$")
+                cbar.ax.tick_params(labelsize=7)
+    if include_analytical:
+        theory_x_values, theory_y_values, _ = _grid_from_rows(
+            rows,
+            THEORY_REFERENCE_AOA_DEG,
+            THEORY_REFERENCE_Z_OVER_SPAN,
+            "rear_ratio",
+        )
+        theory_baseline_thrust_n = _condition_baseline_thrust(
+            rows,
+            THEORY_REFERENCE_AOA_DEG,
+            THEORY_REFERENCE_Z_OVER_SPAN,
+        )
+        theory_specs = (
+            ("full horseshoe", False),
+            ("wake-only tip pair", True),
+        )
+        for theory_offset, (theory_label, wake_only) in enumerate(theory_specs):
+            row_id = len(conditions) + theory_offset
+            for col_id, (body, body_label) in enumerate(column_specs):
+                ax = axes[row_id, col_id]
+                grid = _analytical_ratio_grid(
+                    theory_x_values,
+                    theory_y_values,
+                    THEORY_REFERENCE_AOA_DEG,
+                    THEORY_REFERENCE_Z_OVER_SPAN,
+                    theory_baseline_thrust_n,
+                    body=body,
+                    wake_only=wake_only,
+                )
+                norm = _ratio_norm_for_grid(grid)
+                mesh = ax.pcolormesh(
+                    _edges(theory_x_values),
+                    _edges(theory_y_values),
+                    grid,
+                    shading="auto",
+                    cmap="RdBu_r",
+                    norm=norm,
+                )
+                _draw_front_wing(ax)
+                ax.set_title(
+                    f"Theory {theory_label} | {body_label}\n"
+                    f"single reference AOA {THEORY_REFERENCE_AOA_DEG:g} deg"
+                )
+                ax.set_xlabel("X/B")
+                ax.set_ylabel("Y/B")
+                ax.set_xlim(
+                    min(-0.02, _edges(theory_x_values)[0]),
+                    _edges(theory_x_values)[-1],
+                )
+                ax.set_ylim(_edges(theory_y_values)[0], _edges(theory_y_values)[-1])
+                ax.grid(False)
+                cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.02)
+                cbar.set_ticks(_ratio_cbar_ticks(norm))
+                cbar.set_label("$T/T_{single}$")
+                cbar.ax.tick_params(labelsize=7)
     if mesh is None:
         raise RuntimeError("No data available for ratio maps.")
-    cbar = fig.colorbar(mesh, ax=axes, fraction=0.025, pad=0.015)
-    cbar.set_ticks(_ratio_cbar_ticks(norm))
-    cbar.set_label("Required thrust / single-wing thrust (white = 1)")
+    if not include_analytical:
+        norm = _ratio_norm(rows, ("front_ratio", "rear_ratio"))
+        cbar = fig.colorbar(mesh, ax=axes, fraction=0.025, pad=0.015)
+        cbar.set_ticks(_ratio_cbar_ticks(norm))
+        cbar.set_label("Required thrust / single-wing thrust (white = 1)")
     fig.suptitle(title)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
+    fig.savefig(output_path)
     plt.close(fig)
 
 
 def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) -> None:
     """Plot unnormalized rear dT/d(X/B) for Z/B=0."""
-    import plot_streamwise_sim_by_aoa_single_analytic as sim_analytic
-
-    conditions = (
-        (5.0, 0.0, "AOA 5 deg, Z/B = 0"),
-        (10.0, 0.0, "AOA 10 deg, Z/B = 0"),
-        (15.0, 0.0, "AOA 15 deg, Z/B = 0"),
+    fig, axes = plt.subplots(
+        len(Z0_AOA_CONDITIONS) + 2,
+        1,
+        figsize=REAR_MAP_FIGSIZE,
+        constrained_layout=True,
     )
-    derivative_payload = []
-    for aoa, z_over_span, label in conditions:
+    axes = np.ravel(axes)
+    mesh = None
+    for row_id, (aoa, z_over_span, label) in enumerate(Z0_AOA_CONDITIONS):
         x_values, y_values, thrust_grid = _grid_from_rows(
             rows, aoa, z_over_span, "rear_thrust_N"
         )
@@ -513,101 +759,96 @@ def _plot_rear_derivative_maps(rows: list[dict[str, Any]], output_path: Path) ->
                 derivative_grid[row_index, valid] = np.gradient(
                     thrust_grid[row_index, valid], x_values[valid]
                 )
-        derivative_payload.append(
-            (x_values, y_values, derivative_grid, label, False, z_over_span)
-        )
-
-    analytic_x_values, analytic_y_values, _ = _grid_from_rows(
-        rows,
-        sim_analytic.ANALYTIC_REFERENCE_AOA_DEG,
-        sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-        "single_body_thrust_N",
-    )
-    if analytic_x_values.size and analytic_y_values.size:
-        analytic_full_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
-            analytic_x_values,
-            analytic_y_values,
-            z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-            wake_only=False,
-        )
-        derivative_payload.append(
-            (
-                analytic_x_values,
-                analytic_y_values,
-                analytic_full_grid,
-                "Analytical full horseshoe\nbound segment + trailing wake, Z/B = 0",
-                "full_horseshoe",
-                sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-            )
-        )
-        analytic_wake_grid = sim_analytic.analytical_rear_dthrust_dxb_grid(
-            analytic_x_values,
-            analytic_y_values,
-            z_over_span=sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-            wake_only=True,
-        )
-        derivative_payload.append(
-            (
-                analytic_x_values,
-                analytic_y_values,
-                analytic_wake_grid,
-                "Analytical wake-only\ntrailing tip-vortex pair, Z/B = 0",
-                "wake_only",
-                sim_analytic.ANALYTIC_REFERENCE_Z_OVER_SPAN,
-            )
-        )
-
-    fig, axes = plt.subplots(3, 2, figsize=(13.0, 13.8), constrained_layout=True)
-    flat_axes = axes.ravel()
-    mesh = None
-    for ax, (x_values, y_values, grid, label, analytic_kind, z_over_span) in zip(
-        flat_axes, derivative_payload
-    ):
-        finite_values = grid[np.isfinite(grid)]
-        panel_vmax = max(1.0e-12, float(np.nanmax(np.abs(finite_values))))
-        panel_norm = TwoSlopeNorm(vmin=-panel_vmax, vcenter=0.0, vmax=panel_vmax)
+        ax = axes[row_id]
+        panel_norm = _derivative_norm_for_grid(derivative_grid)
         mesh = ax.pcolormesh(
             _edges(x_values),
             _edges(y_values),
+            derivative_grid,
+            shading="auto",
+            cmap="RdBu_r",
+            norm=panel_norm,
+        )
+        _plot_zero_contour(ax, x_values, y_values, derivative_grid)
+        _draw_front_wing(ax)
+        ax.set_title(f"{label} | Simulation rear")
+        ax.set_xlabel("X/B")
+        ax.set_ylabel("Y/B")
+        ax.set_xlim(min(-0.02, _edges(x_values)[0]), _edges(x_values)[-1])
+        ax.set_ylim(_edges(y_values)[0], _edges(y_values)[-1])
+        ax.grid(False)
+        cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.02)
+        cbar.set_label("dT / d(X/B) (N)")
+        cbar.ax.tick_params(labelsize=7)
+    theory_x_values, theory_y_values, _ = _grid_from_rows(
+        rows,
+        THEORY_REFERENCE_AOA_DEG,
+        THEORY_REFERENCE_Z_OVER_SPAN,
+        "rear_thrust_N",
+    )
+    theory_payload = (
+        (
+            _analytical_rear_dthrust_dxb_grid(
+                theory_x_values,
+                theory_y_values,
+                THEORY_REFERENCE_AOA_DEG,
+                THEORY_REFERENCE_Z_OVER_SPAN,
+                wake_only=False,
+            ),
+            "Theory full horseshoe rear\n"
+            f"single reference AOA {THEORY_REFERENCE_AOA_DEG:g} deg",
+            "full_horseshoe",
+        ),
+        (
+            _analytical_rear_dthrust_dxb_grid(
+                theory_x_values,
+                theory_y_values,
+                THEORY_REFERENCE_AOA_DEG,
+                THEORY_REFERENCE_Z_OVER_SPAN,
+                wake_only=True,
+            ),
+            "Theory wake-only rear\n"
+            f"single reference AOA {THEORY_REFERENCE_AOA_DEG:g} deg",
+            "wake_only",
+        ),
+    )
+    for theory_offset, (grid, panel_title, analytic_kind) in enumerate(theory_payload):
+        ax = axes[len(Z0_AOA_CONDITIONS) + theory_offset]
+        panel_norm = _derivative_norm_for_grid(grid)
+        mesh = ax.pcolormesh(
+            _edges(theory_x_values),
+            _edges(theory_y_values),
             grid,
             shading="auto",
             cmap="RdBu_r",
             norm=panel_norm,
         )
-        if np.any(np.isfinite(grid)) and np.nanmin(grid) <= 0.0 <= np.nanmax(grid):
-            ax.contour(
-                x_values,
-                y_values,
-                grid,
-                levels=[0.0],
-                colors="#555555",
-                linestyles="--",
-                linewidths=1.15,
-            )
+        _plot_zero_contour(ax, theory_x_values, theory_y_values, grid)
         if analytic_kind == "wake_only":
             _draw_tip_pair_neutral_boundary(
                 ax,
-                y_values=y_values,
-                z_over_span=z_over_span,
+                y_values=theory_y_values,
+                z_over_span=THEORY_REFERENCE_Z_OVER_SPAN,
             )
         _draw_front_wing(ax)
-        ax.set_title(label)
+        ax.set_title(panel_title)
         ax.set_xlabel("X/B")
         ax.set_ylabel("Y/B")
+        ax.set_xlim(min(-0.02, _edges(theory_x_values)[0]), _edges(theory_x_values)[-1])
+        ax.set_ylim(_edges(theory_y_values)[0], _edges(theory_y_values)[-1])
         ax.grid(False)
-        cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.025)
-        cbar.set_label("dT / d(X/B) (N)\nblue=streamwise restoring, red=anti-restoring")
+        cbar = fig.colorbar(mesh, ax=ax, fraction=0.046, pad=0.02)
+        cbar.set_label("dT / d(X/B) (N)")
+        cbar.ax.tick_params(labelsize=7)
         if ax.get_legend_handles_labels()[0]:
             ax.legend(loc="upper right", framealpha=0.88)
-    for ax in flat_axes[len(derivative_payload) :]:
-        ax.axis("off")
     if mesh is None:
         raise RuntimeError("No data available for derivative maps.")
     fig.suptitle(
         "Rear-Wing Streamwise Thrust Gradient: Simulation, Full Horseshoe, and Wake-Only"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight")
+    fig.savefig(output_path)
     plt.close(fig)
 
 
@@ -659,12 +900,12 @@ def build_dataset(
     _plot_ratio_maps(
         rows=rows,
         output_path=figures_dir / "z0_thrust_ratio_front_rear_by_aoa.png",
-        conditions=(
-            (5.0, 0.0, "AOA 5 deg, Z/B = 0"),
-            (10.0, 0.0, "AOA 10 deg, Z/B = 0"),
-            (15.0, 0.0, "AOA 15 deg, Z/B = 0"),
+        conditions=Z0_AOA_CONDITIONS,
+        title=(
+            "Fixed-Wing Required Thrust Ratios, Z/B = 0: "
+            "Simulation and Horseshoe Theory"
         ),
-        title="Fixed-Wing Formation Required Thrust Ratios, Z/B = 0",
+        include_analytical=True,
     )
     _plot_ratio_maps(
         rows=rows,
@@ -735,8 +976,11 @@ def build_dataset(
             "analytical_comparison_note": (
                 "Streamwise-map analytical comparisons and the 9-panel stability "
                 "figure use the in-repo horseshoe/tip-vortex Biot-Savart model "
-                "from examples/horseshoe_tip_vortex_stability.py. The dT/d(X/B) "
-                "figure separates full-horseshoe and wake-only analytical panels."
+                "from examples/horseshoe_tip_vortex_stability.py. The Z/B=0 "
+                "thrust-ratio figure shows simulation front/rear rows by AOA, "
+                "then one full-horseshoe and one wake-only analytical reference "
+                "row at the end. The dT/d(X/B) figure likewise places one full "
+                "and one wake-only analytical reference after the simulation rows."
             ),
             "removed_stale_outputs": removed,
             "rows": rows,
@@ -758,9 +1002,10 @@ def build_dataset(
         "manuscript's bird 1 corresponds to the plotted rear body.\n\n"
         "Streamwise-map analytical comparisons and the 9-panel stability figure use "
         "the in-repo analytical horseshoe/tip-vortex Biot-Savart model in "
-        "`examples/horseshoe_tip_vortex_stability.py`. The dT/d(X/B) figure includes "
-        "separate full-horseshoe and wake-only analytical panels; the wake-only "
-        "panel also overlays the point-receiver tip-vortex-pair neutral contour. "
+        "`examples/horseshoe_tip_vortex_stability.py`. The Z/B=0 thrust-ratio and "
+        "dT/d(X/B) figures show simulation rows by AOA first, then one full-horseshoe "
+        "and one wake-only analytical reference at the end. The wake-only dT/d(X/B) "
+        "reference also overlays the point-receiver tip-vortex-pair neutral contour. "
         "`sim_by_aoa_single_analytic_reference.png` likewise includes separate "
         "full-horseshoe and wake-only analytical thrust-ratio panels.\n\n"
         "Generated files:\n"

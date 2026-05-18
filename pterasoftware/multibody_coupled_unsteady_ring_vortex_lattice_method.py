@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -28,6 +29,34 @@ from . import (
 )
 
 _logger = _logging.get_logger("multibody_coupled_unsteady_ring_vortex_lattice_method")
+
+
+@dataclass(frozen=True)
+class MultiBodyRestartState:
+    """State needed to restart a multibody free-wake solve at a saved step."""
+
+    global_step: int
+    positions_E_E: np.ndarray
+    R_pas_E_to_BPs: np.ndarray
+    velocities_E__E: np.ndarray
+    omegas_BPs__E: np.ndarray
+    wake_strengths: np.ndarray
+    wake_ages: np.ndarray
+    wake_rc0s: np.ndarray
+    wake_br: np.ndarray
+    wake_fr: np.ndarray
+    wake_fl: np.ndarray
+    wake_bl: np.ndarray
+    previous_body_positions_E_E: np.ndarray
+    previous_body_R_pas_GP_to_Es: np.ndarray
+    previous_bound_vortex_strengths: np.ndarray
+    previous_stack_cpp: np.ndarray
+    previous_stack_cblvpr: np.ndarray
+    previous_stack_cblvpf: np.ndarray
+    previous_stack_cblvpl: np.ndarray
+    previous_stack_cblvpb: np.ndarray
+    previous_panel_blpp: np.ndarray
+    previous_panel_brpp: np.ndarray
 
 
 class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
@@ -60,6 +89,11 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         self._history_stride = 1
         self._save_every_n_steps: int | None = None
         self._history_save_dir: Path | None = None
+        self._restart_checkpoint_dir: Path | None = None
+        self._restart_checkpoint_every_n_steps: int | None = None
+        self._restart_global_step_offset = 0
+        self._restart_state: MultiBodyRestartState | None = None
+        self._restart_initial_wake_rows = 0
         self._store_full_history = True
         self.full_history_available = True
 
@@ -184,6 +218,10 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         history_stride: int | np.integer = 1,
         save_every_n_steps: int | np.integer | None = None,
         history_save_dir: str | Path | None = None,
+        restart_state: MultiBodyRestartState | None = None,
+        restart_checkpoint_dir: str | Path | None = None,
+        restart_checkpoint_every_n_steps: int | np.integer | None = None,
+        restart_global_step_offset: int | np.integer | None = None,
     ) -> None:
         """Run the multibody coupled simulation."""
         self._prescribed_wake = _parameter_validation.boolLike_return_bool(
@@ -214,10 +252,44 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                 raise TypeError("history_save_dir must be a str, Path, or None.")
             self._history_save_dir = Path(history_save_dir)
             self._history_save_dir.mkdir(parents=True, exist_ok=True)
+        self._restart_state = restart_state
+        if restart_checkpoint_dir is None:
+            self._restart_checkpoint_dir = None
+        else:
+            if not isinstance(restart_checkpoint_dir, (str, Path)):
+                raise TypeError("restart_checkpoint_dir must be a str, Path, or None.")
+            self._restart_checkpoint_dir = Path(restart_checkpoint_dir)
+            self._restart_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        if restart_checkpoint_every_n_steps is None:
+            self._restart_checkpoint_every_n_steps = None
+        else:
+            self._restart_checkpoint_every_n_steps = (
+                _parameter_validation.int_in_range_return_int(
+                    restart_checkpoint_every_n_steps,
+                    "restart_checkpoint_every_n_steps",
+                    min_val=1,
+                    min_inclusive=True,
+                )
+            )
+        if restart_global_step_offset is None:
+            self._restart_global_step_offset = (
+                int(restart_state.global_step) if restart_state is not None else 0
+            )
+        else:
+            self._restart_global_step_offset = (
+                _parameter_validation.int_in_range_return_int(
+                    restart_global_step_offset,
+                    "restart_global_step_offset",
+                    min_val=0,
+                    min_inclusive=True,
+                )
+            )
         self._store_full_history = self._history_stride == 1
         self.full_history_available = self._store_full_history
 
         self._preallocate_wake_arrays()
+        if self._restart_state is not None:
+            self._install_restart_state()
         initial_states = self.mujoco_model.get_states()
         self.stackPositions_E_E[0] = cast(np.ndarray, initial_states["positions_E_E"])
         self.stackR_pas_E_to_BPs[0] = cast(np.ndarray, initial_states["R_pas_E_to_BPs"])
@@ -238,6 +310,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                 self.current_positions_E_E = current_problem.positions_E_E
                 self._validate_shared_environment(self.current_coupled_operating_points)
                 self._update_current_body_kinematics()
+                self._save_restart_checkpoint_if_requested(step=step)
 
                 self._allocate_step_arrays(step=step)
                 if step == 0:
@@ -280,8 +353,22 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                 assert _num_spanwise is not None
                 total_spanwise_panels += _num_spanwise
 
+        initial_wake_count = 0
+        if self._restart_state is not None:
+            initial_wake_count = int(np.size(self._restart_state.wake_strengths))
+            if total_spanwise_panels > 0:
+                if initial_wake_count % total_spanwise_panels != 0:
+                    raise ValueError(
+                        "Restart wake count is incompatible with the current wings."
+                    )
+                self._restart_initial_wake_rows = (
+                    initial_wake_count // total_spanwise_panels
+                )
+
         for step in range(self.num_steps):
-            this_num_wake_ring_vortices = step * total_spanwise_panels
+            this_num_wake_ring_vortices = (
+                initial_wake_count + step * total_spanwise_panels
+            )
             keep_step_history = self._store_full_history or self._should_retain_step(
                 step
             )
@@ -317,6 +404,93 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                 self.listStackFlwrvp_GP1_CgP1.append(None)
                 self.listStackBlwrvp_GP1_CgP1.append(None)
 
+    def _install_restart_state(self) -> None:
+        """Install restart wake objects on the first problem's airplane copies."""
+        restart_state = self._restart_state
+        if restart_state is None:
+            return
+        first_problem = self.multi_body_coupled_steady_problems[0]
+        self.current_airplanes = first_problem.airplanes
+        self.current_coupled_operating_points = first_problem.coupled_operating_points
+        self.current_positions_E_E = first_problem.positions_E_E
+
+        wake_position = 0
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                num_spanwise = wing.num_spanwise_panels
+                assert num_spanwise is not None
+                count = self._restart_initial_wake_rows * num_spanwise
+                wing_strengths = restart_state.wake_strengths[
+                    wake_position : wake_position + count
+                ]
+                wing_ages = restart_state.wake_ages[
+                    wake_position : wake_position + count
+                ]
+                wing_br = restart_state.wake_br[wake_position : wake_position + count]
+                wing_fr = restart_state.wake_fr[wake_position : wake_position + count]
+                wing_fl = restart_state.wake_fl[wake_position : wake_position + count]
+                wing_bl = restart_state.wake_bl[wake_position : wake_position + count]
+                self._install_wing_restart_wake(
+                    wing=wing,
+                    num_rows=self._restart_initial_wake_rows,
+                    num_spanwise=num_spanwise,
+                    strengths=wing_strengths,
+                    ages=wing_ages,
+                    br=wing_br,
+                    fr=wing_fr,
+                    fl=wing_fl,
+                    bl=wing_bl,
+                )
+                wake_position += count
+        if wake_position != np.size(restart_state.wake_strengths):
+            raise ValueError("Restart wake arrays were not fully consumed.")
+
+    @staticmethod
+    def _install_wing_restart_wake(
+        wing: geometry.wing.Wing,
+        num_rows: int,
+        num_spanwise: int,
+        strengths: np.ndarray,
+        ages: np.ndarray,
+        br: np.ndarray,
+        fr: np.ndarray,
+        fl: np.ndarray,
+        bl: np.ndarray,
+    ) -> None:
+        """Install one wing's flattened wake arrays as ring-vortex objects."""
+        if num_rows == 0:
+            wing.gridWrvp_GP1_CgP1 = np.zeros((0, num_spanwise + 1, 3), dtype=float)
+            wing.wake_ring_vortices = np.empty((0, num_spanwise), dtype=object)
+            return
+        wake_ring_vortices = np.empty((num_rows, num_spanwise), dtype=object)
+        grid = np.zeros((num_rows + 1, num_spanwise + 1, 3), dtype=float)
+        for row in range(num_rows):
+            for spanwise in range(num_spanwise):
+                flat = row * num_spanwise + spanwise
+                wake_ring_vortex = _vortices.ring_vortex.RingVortex(
+                    Flrvp_GP1_CgP1=fl[flat],
+                    Frrvp_GP1_CgP1=fr[flat],
+                    Blrvp_GP1_CgP1=bl[flat],
+                    Brrvp_GP1_CgP1=br[flat],
+                    strength=float(strengths[flat]),
+                )
+                wake_ring_vortex.age = float(ages[flat])
+                wake_ring_vortices[row, spanwise] = wake_ring_vortex
+                grid[row, spanwise] = fl[flat]
+                grid[row, spanwise + 1] = fr[flat]
+                grid[row + 1, spanwise] = bl[flat]
+                grid[row + 1, spanwise + 1] = br[flat]
+        wing.gridWrvp_GP1_CgP1 = grid
+        wing.wake_ring_vortices = wake_ring_vortices
+
+    def _has_restart_previous_bound_state(self) -> bool:
+        """Return whether the restart state has previous-step bound data."""
+        return (
+            self._restart_state is not None
+            and np.size(self._restart_state.previous_bound_vortex_strengths)
+            == self.num_panels
+        )
+
     def _allocate_step_arrays(self, step: int) -> None:
         """Allocate or reset per-step arrays."""
         self._currentStackFreestreamWingInfluences__E = np.zeros(
@@ -327,7 +501,8 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         )
         self._currentStackWakeWingInfluences__E = np.zeros(self.num_panels, dtype=float)
         self._current_bound_vortex_strengths = np.ones(self.num_panels, dtype=float)
-        if step == 0:
+        has_restart_previous = step == 0 and self._has_restart_previous_bound_state()
+        if step == 0 and not has_restart_previous:
             self._last_bound_vortex_strengths = np.zeros(self.num_panels, dtype=float)
 
         self.panels = np.empty(self.num_panels, dtype=object)
@@ -358,6 +533,30 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         self._lastStackCblvpf_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
         self._lastStackCblvpl_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
         self._lastStackCblvpb_GP1_CgP1 = np.zeros((self.num_panels, 3), dtype=float)
+        if has_restart_previous:
+            assert self._restart_state is not None
+            self._last_body_positions_E_E[:] = (
+                self._restart_state.previous_body_positions_E_E
+            )
+            self._last_body_R_pas_GP_to_Es[:] = (
+                self._restart_state.previous_body_R_pas_GP_to_Es
+            )
+            self._last_bound_vortex_strengths = (
+                self._restart_state.previous_bound_vortex_strengths.copy()
+            )
+            self._lastStackCpp_GP1_CgP1 = self._restart_state.previous_stack_cpp.copy()
+            self._lastStackCblvpr_GP1_CgP1 = (
+                self._restart_state.previous_stack_cblvpr.copy()
+            )
+            self._lastStackCblvpf_GP1_CgP1 = (
+                self._restart_state.previous_stack_cblvpf.copy()
+            )
+            self._lastStackCblvpl_GP1_CgP1 = (
+                self._restart_state.previous_stack_cblvpl.copy()
+            )
+            self._lastStackCblvpb_GP1_CgP1 = (
+                self._restart_state.previous_stack_cblvpb.copy()
+            )
 
         num_wake_ring_vortices = self.list_num_wake_vortices[step]
         wake_strengths = self._list_wake_vortex_strengths[step]
@@ -422,9 +621,19 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             return
 
         snapshot_path = self._history_save_dir / f"step_{step:06d}.npz"
+        global_step = self._restart_global_step_offset + step
         np.savez_compressed(
             snapshot_path,
             step=np.array([step], dtype=int),
+            global_step=np.array([global_step], dtype=int),
+            current_positions_E_E=np.asarray(self.current_positions_E_E, dtype=float),
+            current_R_pas_E_to_BPs=np.asarray(
+                [
+                    op.T_pas_E_CgP1_to_BP1_CgP1[:3, :3]
+                    for op in self.current_coupled_operating_points
+                ],
+                dtype=float,
+            ),
             positions_E_E=self._next_positions_E_E.copy(),
             R_pas_E_to_BPs=self._next_R_pas_E_to_BPs.copy(),
             velocities_E__E=self._next_velocities_E__E.copy(),
@@ -443,6 +652,143 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             wake_fl=self._currentStackFlwrvp_GP1_CgP1.copy(),
             wake_bl=self._currentStackBlwrvp_GP1_CgP1.copy(),
         )
+
+    def _save_restart_checkpoint_if_requested(self, step: int) -> None:
+        """Persist an exact-restart checkpoint for the current start-of-step state."""
+        if self._restart_checkpoint_dir is None:
+            return
+        global_step = self._restart_global_step_offset + step
+        should_save = step == 0 or step == self.num_steps - 1
+        if self._restart_checkpoint_every_n_steps is not None:
+            should_save = should_save or (
+                global_step % self._restart_checkpoint_every_n_steps == 0
+            )
+        if not should_save:
+            return
+
+        (
+            wake_strengths,
+            wake_ages,
+            wake_rc0s,
+            wake_br,
+            wake_fr,
+            wake_fl,
+            wake_bl,
+        ) = self._flatten_current_airplane_wake()
+        previous_panel_blpp, previous_panel_brpp = self._previous_panel_back_points(
+            step=step
+        )
+        restart_path = (
+            self._restart_checkpoint_dir / f"restart_step_{global_step:06d}.npz"
+        )
+        np.savez_compressed(
+            restart_path,
+            restart_compatible=np.array([True], dtype=bool),
+            local_step=np.array([step], dtype=int),
+            global_step=np.array([global_step], dtype=int),
+            positions_E_E=np.asarray(self.current_positions_E_E, dtype=float),
+            R_pas_E_to_BPs=np.asarray(
+                [
+                    op.T_pas_E_CgP1_to_BP1_CgP1[:3, :3]
+                    for op in self.current_coupled_operating_points
+                ],
+                dtype=float,
+            ),
+            velocities_E__E=np.asarray(
+                [op.vCg_E__E for op in self.current_coupled_operating_points],
+                dtype=float,
+            ),
+            omegas_BPs__E=np.asarray(
+                [op.omegas_BP1__E for op in self.current_coupled_operating_points],
+                dtype=float,
+            ),
+            wake_strengths=wake_strengths,
+            wake_ages=wake_ages,
+            wake_rc0s=wake_rc0s,
+            wake_br=wake_br,
+            wake_fr=wake_fr,
+            wake_fl=wake_fl,
+            wake_bl=wake_bl,
+            previous_body_positions_E_E=self._last_body_positions_E_E.copy(),
+            previous_body_R_pas_GP_to_Es=self._last_body_R_pas_GP_to_Es.copy(),
+            previous_bound_vortex_strengths=self._last_bound_vortex_strengths.copy(),
+            previous_stack_cpp=self._lastStackCpp_GP1_CgP1.copy(),
+            previous_stack_cblvpr=self._lastStackCblvpr_GP1_CgP1.copy(),
+            previous_stack_cblvpf=self._lastStackCblvpf_GP1_CgP1.copy(),
+            previous_stack_cblvpl=self._lastStackCblvpl_GP1_CgP1.copy(),
+            previous_stack_cblvpb=self._lastStackCblvpb_GP1_CgP1.copy(),
+            previous_panel_blpp=previous_panel_blpp,
+            previous_panel_brpp=previous_panel_brpp,
+        )
+
+    def _flatten_current_airplane_wake(
+        self,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+    ]:
+        """Flatten current wake ring-vortex objects in solver order."""
+        strengths: list[float] = []
+        ages: list[float] = []
+        rc0s: list[float] = []
+        br: list[np.ndarray] = []
+        fr: list[np.ndarray] = []
+        fl: list[np.ndarray] = []
+        bl: list[np.ndarray] = []
+        for airplane in self.current_airplanes:
+            for wing in airplane.wings:
+                _standard_mean_chord = wing.standard_mean_chord
+                assert _standard_mean_chord is not None
+                wing_r_c0 = 0.03 * _standard_mean_chord
+                wake_ring_vortices = wing.wake_ring_vortices
+                assert wake_ring_vortices is not None
+                for wake_ring_vortex in np.ravel(wake_ring_vortices):
+                    strengths.append(float(wake_ring_vortex.strength))
+                    ages.append(float(wake_ring_vortex.age))
+                    rc0s.append(float(wing_r_c0))
+                    br.append(wake_ring_vortex.Brrvp_GP1_CgP1)
+                    fr.append(wake_ring_vortex.Frrvp_GP1_CgP1)
+                    fl.append(wake_ring_vortex.Flrvp_GP1_CgP1)
+                    bl.append(wake_ring_vortex.Blrvp_GP1_CgP1)
+        return (
+            np.asarray(strengths, dtype=float),
+            np.asarray(ages, dtype=float),
+            np.asarray(rc0s, dtype=float),
+            np.asarray(br, dtype=float).reshape((-1, 3)),
+            np.asarray(fr, dtype=float).reshape((-1, 3)),
+            np.asarray(fl, dtype=float).reshape((-1, 3)),
+            np.asarray(bl, dtype=float).reshape((-1, 3)),
+        )
+
+    def _previous_panel_back_points(self, step: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return previous-step panel back points in flattened panel order."""
+        if step == 0 and self._restart_state is not None:
+            return (
+                self._restart_state.previous_panel_blpp.copy(),
+                self._restart_state.previous_panel_brpp.copy(),
+            )
+        blpp = np.zeros((self.num_panels, 3), dtype=float)
+        brpp = np.zeros((self.num_panels, 3), dtype=float)
+        if step == 0:
+            return blpp, brpp
+        last_problem = self.multi_body_coupled_steady_problems[step - 1]
+        global_panel_position = 0
+        for airplane in last_problem.airplanes:
+            for wing in airplane.wings:
+                panels = wing.panels
+                assert panels is not None
+                for panel in np.ravel(panels):
+                    assert panel.Blpp_GP1_CgP1 is not None
+                    assert panel.Brpp_GP1_CgP1 is not None
+                    blpp[global_panel_position] = panel.Blpp_GP1_CgP1
+                    brpp[global_panel_position] = panel.Brpp_GP1_CgP1
+                    global_panel_position += 1
+        return blpp, brpp
 
     def _prune_old_step_history(self, step: int) -> None:
         """Drop heavy history objects that are no longer needed for the solve."""
@@ -490,6 +836,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         """Initialize bound ring vortices for one multibody time step."""
         this_problem = self.multi_body_coupled_steady_problems[step]
 
+        global_panel_position = 0
         for airplane_index, airplane in enumerate(this_problem.airplanes):
             for wing_index, wing in enumerate(airplane.wings):
                 _num_spanwise = wing.num_spanwise_panels
@@ -530,7 +877,39 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                             airplane_indices = np.array(
                                 [airplane_index, airplane_index], dtype=int
                             )
-                            if step == 0:
+                            if (
+                                step == 0
+                                and self._restart_state is not None
+                                and self._has_restart_previous_bound_state()
+                                and np.size(self._restart_state.previous_panel_blpp)
+                                == self.num_panels * 3
+                            ):
+                                current_body_states = (
+                                    self._get_body_state_arrays_for_step(step)
+                                )
+                                last_points_E = np.vstack(
+                                    [
+                                        self._restart_state.previous_panel_blpp[
+                                            global_panel_position
+                                        ],
+                                        self._restart_state.previous_panel_brpp[
+                                            global_panel_position
+                                        ],
+                                    ]
+                                )
+                                apparent_velocities = self._calculate_surface_apparent_velocities_from_body_states(
+                                    points_E=current_points_E,
+                                    airplane_indices=airplane_indices,
+                                    last_points_E=last_points_E,
+                                    current_positions_E_E=current_body_states[0],
+                                    current_velocities_E__E=current_body_states[1],
+                                    current_omegas_E__E=current_body_states[2],
+                                    current_R_pas_GP_to_Es=current_body_states[3],
+                                    last_positions_E_E=self._restart_state.previous_body_positions_E_E,
+                                    last_R_pas_GP_to_Es=self._restart_state.previous_body_R_pas_GP_to_Es,
+                                    delta_time=self.delta_time,
+                                )
+                            elif step == 0:
                                 current_body_states = (
                                     self._get_body_state_arrays_for_step(step)
                                 )
@@ -593,6 +972,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                             Brrvp_GP1_CgP1=Brrvp,
                             strength=1.0,
                         )
+                        global_panel_position += 1
 
     def _collapse_geometry(self) -> None:
         """Collapse the current multibody geometry into vectorized arrays."""
@@ -879,7 +1259,10 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                         ) / 2
 
                     if panel.is_trailing_edge:
-                        if self._current_step == 0:
+                        if (
+                            self._current_step == 0
+                            and not self._has_restart_previous_bound_state()
+                        ):
                             effective_back[global_panel_position] = (
                                 self._current_bound_vortex_strengths[
                                     global_panel_position
@@ -955,7 +1338,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                 expected_bound_collinearity += (
                     8 * n - 2 * num_chordwise - 2 * num_spanwise
                 )
-                if self._current_step > 0:
+                if self._current_step > 0 or self._restart_initial_wake_rows > 0:
                     expected_wake_collinearity += num_spanwise
 
         unexpected_bound_singularity_counts = np.copy(bound_singularity_counts)
@@ -1281,7 +1664,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
             for wing_index, next_wing in enumerate(next_airplane.wings):
                 this_wing = this_airplane.wings[wing_index]
 
-                if self._current_step == 0:
+                if self._current_step == 0 and self._restart_initial_wake_rows == 0:
                     num_spanwise_panels = this_wing.num_spanwise_panels
                     assert num_spanwise_panels is not None
                     chordwise_panel_id = this_wing.num_chordwise_panels - 1
@@ -1325,17 +1708,24 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                                 )
                             )
                         else:
-                            induced_velocity_E = np.squeeze(
-                                self.calculate_solution_velocity(
-                                    np.expand_dims(first_row_point_E, axis=0)
-                                )
-                            )
                             surface_apparent_velocity_E = np.squeeze(
                                 self._calculate_rigid_body_apparent_velocities_at_points(
                                     points_E=np.expand_dims(first_row_point_E, axis=0),
                                     airplane_indices=np.array(
                                         [airplane_index], dtype=int
                                     ),
+                                )
+                            )
+                            # The single-body solver evaluates the induced part in
+                            # the current body frame; remove the body translation
+                            # from the newly attached row before evaluating induction.
+                            induced_velocity_point_E = (
+                                first_row_point_E
+                                + surface_apparent_velocity_E * self.delta_time
+                            )
+                            induced_velocity_E = np.squeeze(
+                                self.calculate_solution_velocity(
+                                    np.expand_dims(induced_velocity_point_E, axis=0)
                                 )
                             )
                             second_row[0, spanwise_point_id] = (
@@ -1376,6 +1766,16 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                                 )
                     else:
                         next_grid[:] = np.copy(_this_grid)
+                        current_vInf_E = _transformations.apply_T_to_vectors(
+                            current_operating_point.T_pas_GP1_CgP1_to_E_CgP1,
+                            current_vInf_GP1__E,
+                            has_point=False,
+                        )
+                        frame_correction_E = (
+                            next_position_E_E
+                            - current_position_E_E
+                            + current_vInf_E * self.delta_time
+                        )
                         num_chordwise_points = next_grid.shape[0]
                         num_spanwise_points = next_grid.shape[1]
                         for chordwise_point_id in range(num_chordwise_points):
@@ -1390,6 +1790,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
                                 )
                                 next_grid[chordwise_point_id, spanwise_point_id] += (
                                     induced_velocity_E * self.delta_time
+                                    + frame_correction_E
                                 )
 
                     next_wing.gridWrvp_GP1_CgP1 = next_grid
@@ -1583,7 +1984,7 @@ class MultiBodyCoupledUnsteadyRingVortexLatticeMethodSolver:
         last_points_E: np.ndarray,
     ) -> np.ndarray:
         """Return apparent velocities including prescribed internal body motion."""
-        if self._current_step < 1:
+        if self._current_step < 1 and not self._has_restart_previous_bound_state():
             return self._calculate_rigid_body_apparent_velocities_at_points(
                 points_E=points_E,
                 airplane_indices=airplane_indices,

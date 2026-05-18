@@ -515,7 +515,7 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
     analytical_ux_xz = analytical_vel_xz[:, 0].reshape(X_xz.shape)
     analytical_uz_xz_inplane = analytical_vel_xz[:, 2].reshape(X_xz.shape)
 
-    fig, axes = plt.subplots(4, 2, figsize=(13.8, 15.4), constrained_layout=True)
+    fig, axes = plt.subplots(3, 2, figsize=(13.8, 11.6), constrained_layout=True)
     fig.set_constrained_layout_pads(
         w_pad=0.015,
         h_pad=0.035,
@@ -548,22 +548,8 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
         cbar_label="analytical $u_z$ (m/s)",
     )
 
-    _plot_pair(
-        axes=axes,
-        row=1,
-        x_plot=x_xy_plot,
-        y_plot=Y_xy,
-        sim_grid=sim_uz_xy,
-        model_grid=analytical_uz_xy,
-        title_left="Simulation: $u_z$ in XY plane (Z/B=0)",
-        title_right="Analytical horseshoe: $u_z$ in XY plane (Z/B=0)",
-        xlabel="$x - x_\\mathrm{wing}$ (m)",
-        ylabel="y (m)",
-        right_cbar_label="analytical $u_z$ (m/s)",
-    )
-
     _add_streamline_panel(
-        ax=axes[2, 0],
+        ax=axes[1, 0],
         x_plot=Y_yz,
         y_plot=Z_yz,
         scalar_grid=sim_uz_yz,
@@ -575,7 +561,7 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
         cbar_label="simulation $u_z$ (m/s)",
     )
     _add_streamline_panel(
-        ax=axes[2, 1],
+        ax=axes[1, 1],
         x_plot=Y_yz,
         y_plot=Z_yz,
         scalar_grid=analytical_uz_yz,
@@ -588,7 +574,7 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
     )
 
     _add_quiver_panel(
-        ax=axes[3, 0],
+        ax=axes[2, 0],
         x_plot=x_xz_plot,
         y_plot=Z_xz,
         scalar_grid=sim_uz_xz,
@@ -600,7 +586,7 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
         cbar_label="simulation $u_z$ (m/s)",
     )
     _add_quiver_panel(
-        ax=axes[3, 1],
+        ax=axes[2, 1],
         x_plot=x_xz_plot,
         y_plot=Z_xz,
         scalar_grid=analytical_uz_xz,
@@ -614,9 +600,8 @@ def build_figure(case_dir: Path, step: int, output: Path) -> None:
 
     for col in range(2):
         _draw_wing_xy(axes[0, col], R_pas_E_to_BP1, pos_E, x_origin_E)
-        _draw_wing_xy(axes[1, col], R_pas_E_to_BP1, pos_E, x_origin_E)
-        _draw_wing_yz(axes[2, col], R_pas_E_to_BP1, pos_E)
-        _draw_wing_xz(axes[3, col], R_pas_E_to_BP1, pos_E, x_origin_E)
+        _draw_wing_yz(axes[1, col], R_pas_E_to_BP1, pos_E)
+        _draw_wing_xz(axes[2, col], R_pas_E_to_BP1, pos_E, x_origin_E)
 
     fig.suptitle(
         "Single-Wing Wake: Free-Wake Simulation vs Analytical Horseshoe/Tip-Vortex Model\n"

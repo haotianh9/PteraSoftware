@@ -1140,7 +1140,7 @@ class MultiBodyCoupledMovement:
         self._prescribed_num_steps = _parameter_validation.int_in_range_return_int(
             prescribed_num_steps,
             "prescribed_num_steps",
-            min_val=1,
+            min_val=0,
             min_inclusive=True,
         )
         self._free_num_steps = _parameter_validation.int_in_range_return_int(
